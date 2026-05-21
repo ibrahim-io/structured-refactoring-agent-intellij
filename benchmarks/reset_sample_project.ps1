@@ -13,7 +13,8 @@ git checkout HEAD -- `
     "$projectSrc/LegacyHelper.java" `
     "$projectSrc/utils/DateHelper.java" `
     "$projectSrc/OrderProcessor.java" `
-    "$projectSrc/NotificationController.java"
+    "$projectSrc/NotificationController.java" `
+    "$projectSrc/ServiceLayer.java"
 
 # Remove benchmark-generated files that are not part of the baseline
 $generated = @(

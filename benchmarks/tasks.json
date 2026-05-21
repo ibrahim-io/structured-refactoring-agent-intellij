@@ -54,6 +54,20 @@
     "validation": { "type": "compile_and_symbol_exists", "expectedSymbol": "com.example.User#getDisplayName" }
   },
   {
+    "id": "rename-method-002",
+    "description": "Rename the method 'parseNewFormat' in class com.example.LegacyHelper to 'parseInput'. Update all call sites.",
+    "project": "sample-java-project",
+    "operations": [
+      { "tool": "rename_symbol", "params": { "qualifiedName": "com.example.LegacyHelper#parseNewFormat", "newName": "parseInput" } }
+    ],
+    "validation": {
+      "type": "compile_and_symbol_exists",
+      "expectedSymbol": "com.example.LegacyHelper#parseInput",
+      "crossFileCheck": true,
+      "note": "ServiceLayer.java calls parseNewFormat — structured rename updates both files; text-edit typically misses the cross-file call site."
+    }
+  },
+  {
     "id": "change-sig-001",
     "description": "Change the signature of com.example.Notifier#send to add a second parameter 'int priority' with default value 0.",
     "project": "sample-java-project",
