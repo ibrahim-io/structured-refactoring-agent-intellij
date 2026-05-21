@@ -36,6 +36,9 @@ def check_sample_project() -> bool:
         "src/main/java/com/example/LegacyHelper.java",
         "src/main/java/com/example/Notifier.java",
         "src/main/java/com/example/utils/DateHelper.java",
+        "src/main/java/com/example/OrderProcessor.java",
+        "src/main/java/com/example/NotificationController.java",
+        "src/main/java/com/example/ServiceLayer.java",
         "src/main/java/com/example/payments",
         "pom.xml",
     ]

@@ -84,27 +84,52 @@ curl -X POST http://127.0.0.1:6473/tools \
 
 ## Run benchmarks
 
-Requires Python 3.10+ and an Anthropic API key. Start IntelliJ with the plugin first.
+Requires Python 3.10+ and an Anthropic API key.
 
 ```bash
 pip install anthropic requests
+```
 
-# Set up benchmark projects (sample project is already committed;
-# add --petclinic to also clone spring-petclinic 3.3.0)
-python benchmarks/setup.py
+### Structured agent (requires IntelliJ running)
 
-# Open benchmarks/projects/sample-java-project in the sandbox IntelliJ instance,
-# then run the sample-project benchmark suite
-python benchmarks/run_benchmarks.py \
-  --tasks benchmarks/tasks.json \
-  --api-key $ANTHROPIC_API_KEY \
-  --out results/run.json
+```powershell
+# Reset project to baseline first
+. benchmarks/reset_sample_project.ps1
 
-# Or target spring-petclinic (open that project in IntelliJ first)
+# Open benchmarks/projects/sample-java-project in the sandbox IntelliJ instance, then:
+python benchmarks/run_benchmarks.py `
+  --tasks benchmarks/tasks.json `
+  --api-key $env:ANTHROPIC_API_KEY `
+  --projects-dir benchmarks/projects `
+  --out results/structured-run.json
+```
+
+### Text-edit baseline (no IntelliJ needed)
+
+The baseline agent uses only raw file I/O — no AST, no reference index. Run it standalone to get the comparison data for the thesis:
+
+```powershell
+. benchmarks/reset_sample_project.ps1
+python benchmarks/run_benchmarks_text_edit.py `
+  --tasks benchmarks/tasks.json `
+  --api-key $env:ANTHROPIC_API_KEY `
+  --projects-dir benchmarks/projects `
+  --out results/text-edit-run.json
+```
+
+### Compare agents
+
+```bash
+python benchmarks/compare_results.py results/structured-run.json results/text-edit-run.json
+```
+
+### spring-petclinic (open that project in IntelliJ first)
+
+```bash
+python benchmarks/setup.py --petclinic
 python benchmarks/run_benchmarks.py \
   --tasks benchmarks/tasks_petclinic.json \
   --api-key $ANTHROPIC_API_KEY \
-  --model claude-opus-4-7 \
   --out results/petclinic.json
 ```
 
@@ -134,13 +159,19 @@ docs/
   EVALUATION.md                # Evaluation plan, benchmark task spec, developer study design
 
 benchmarks/
-  tasks.json                   # 6 benchmark tasks targeting sample-java-project
-  tasks_petclinic.json         # 5 benchmark tasks targeting spring-petclinic 3.3.0
-  run_benchmarks.py            # Benchmark runner: drives Claude via API, records results
-  setup.py                     # Project setup: verifies sample project, clones petclinic
+  tasks.json                        # 7 benchmark tasks (3 with cross-file dependencies)
+  tasks_petclinic.json              # 5 tasks targeting spring-petclinic 3.3.0
+  run_benchmarks.py                 # Structured agent runner: compile + content + RefactoringMiner validation
+  run_benchmarks_text_edit.py       # TEXT-EDIT baseline: raw file I/O, no IntelliJ/AST
+  compare_results.py                # Side-by-side structured vs text-edit comparison table
+  setup.py                          # Verifies sample project, optionally clones petclinic
+  reset_sample_project.ps1          # Restore baseline before each benchmark run
   projects/
-    sample-java-project/       # Minimal 4-class Maven project (committed)
-    spring-petclinic/          # Cloned by setup.py --petclinic (gitignored)
+    sample-java-project/            # 7-class Maven project with cross-file reference test cases
+      ...OrderProcessor.java        # imports DateHelper (cross-file move test)
+      ...NotificationController.java# calls Notifier.send (cross-file change-sig test)
+      ...ServiceLayer.java          # calls LegacyHelper.parseNewFormat (cross-file rename test)
+    spring-petclinic/               # Cloned by setup.py --petclinic (gitignored)
 ```
 
 ---
