@@ -3,6 +3,7 @@ package com.example
 import com.intellij.codeInsight.actions.ReformatCodeProcessor
 import com.intellij.ide.highlighter.JavaFileType
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -75,8 +76,9 @@ class PsiCreationService(private val project: Project) {
      */
     fun createJavaFile(packageName: String, fileName: String, content: String): Result {
         if (!fileName.endsWith(".java")) return Result.Err("fileName must end with .java")
-        val targetDir = resolvePackageDirectory(packageName)
-            ?: return Result.Err("Package '$packageName' not found in any source root. Make sure the directory exists.")
+        val targetDir = ReadAction.compute<com.intellij.psi.PsiDirectory?, RuntimeException> {
+            resolvePackageDirectory(packageName)
+        } ?: return Result.Err("Package '$packageName' not found in any source root. Make sure the directory exists.")
 
         val factory = PsiFileFactory.getInstance(project)
         return runWriteOnEdt("Agent Create File") {

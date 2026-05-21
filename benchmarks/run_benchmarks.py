@@ -41,7 +41,7 @@ def call_tool(port: int, tool_name: str, params: dict) -> dict:
     r = requests.post(
         TOOL_CALL_URL.format(port=port),
         json={"tool": tool_name, "params": params},
-        timeout=30,
+        timeout=60,
     )
     return r.json()
 
@@ -158,8 +158,8 @@ def print_summary(results: list) -> None:
     print(f"Results: {passed}/{len(results)} tasks passed")
     print(f"{'='*60}")
     for r in results:
-        icon = "✓" if r["status"] == "PASS" else "✗"
-        print(f"  {icon} [{r['id']}] {r['status']}  ({r['turns']} turns, {r['elapsed_s']}s)")
+        icon = "PASS" if r["status"] == "PASS" else "FAIL"
+        print(f"  [{icon}] [{r['id']}]  ({r['turns']} turns, {r['elapsed_s']}s)")
         for note in r["validation"]["notes"]:
             print(f"      • {note}")
 
@@ -201,7 +201,7 @@ def main():
             validation   = {"passed": False, "notes": [str(e)], "validation_type": "error"}
             status = "ERROR"
         elapsed = round(time.time() - t0, 2)
-        print(f"  → {status} in {elapsed}s ({agent_result['turns']} turns)")
+        print(f"  -> {status} in {elapsed}s ({agent_result['turns']} turns)")
         results.append({
             "id": task["id"],
             "description": task["description"],

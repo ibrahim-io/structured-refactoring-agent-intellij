@@ -4,8 +4,7 @@
     "description": "Rename the field 'usrNm' in class com.example.User to 'username'.",
     "project": "sample-java-project",
     "operations": [
-      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "com.example.User#usrNm" } },
-      { "tool": "rename_symbol",       "params": { "qualifiedName": "com.example.User#usrNm", "newName": "username" } }
+      { "tool": "rename_symbol", "params": { "qualifiedName": "com.example.User#usrNm", "newName": "username" } }
     ],
     "validation": { "type": "compile_and_refactoringminer", "expectedRefactoringType": "Rename Attribute" }
   },
@@ -14,8 +13,7 @@
     "description": "Move class com.example.utils.DateHelper to package com.example.common.",
     "project": "sample-java-project",
     "operations": [
-      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "com.example.utils.DateHelper" } },
-      { "tool": "move_class",          "params": { "qualifiedClassName": "com.example.utils.DateHelper", "targetPackage": "com.example.common" } }
+      { "tool": "move_class", "params": { "qualifiedClassName": "com.example.utils.DateHelper", "targetPackage": "com.example.common" } }
     ],
     "validation": { "type": "compile_and_refactoringminer", "expectedRefactoringType": "Move Class" }
   },

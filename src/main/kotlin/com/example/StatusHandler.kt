@@ -13,17 +13,14 @@ class StatusHandler(private val project: Project) : HttpHandler {
             exchange.sendResponseHeaders(204, -1)
             return
         }
+        val toolNames = org.json.JSONArray(SchemaHandler.SCHEMA).let { arr ->
+            (0 until arr.length()).map { arr.getJSONObject(it).getString("name") }
+        }
         val body = JSONObject()
             .put("ok", true)
             .put("project", project.name)
-            .put("port", AgentToolServer.PORT)
-            .put("tools", listOf(
-                "find_symbol_by_name", "list_symbols",
-                "find_symbol", "rename_symbol", "safe_delete",
-                "add_field", "add_method", "add_inner_class", "create_java_file",
-                "move_class", "change_signature",
-                "add_kt_property", "add_kt_function", "create_kotlin_file"
-            ))
+            .put("port", AgentRefactorSettings.instance().port)
+            .put("tools", toolNames)
             .toString()
             .toByteArray(Charsets.UTF_8)
         exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
