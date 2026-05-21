@@ -24,7 +24,7 @@
     "operations": [
       { "tool": "safe_delete", "params": { "qualifiedName": "com.example.LegacyHelper#parseOldFormat" } }
     ],
-    "validation": { "type": "compile_and_no_reference" }
+    "validation": { "type": "compile_and_no_reference", "deletedSymbol": "parseOldFormat" }
   },
   {
     "id": "create-class-001",

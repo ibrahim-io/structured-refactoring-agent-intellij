@@ -3,23 +3,36 @@
 Benchmark runner for the structured-refactoring-agent.
 
 Usage:
-    python benchmarks/run_benchmarks.py \\
-        --tasks benchmarks/tasks.json \\
-        --agent-port 6473 \\
-        --api-key $ANTHROPIC_API_KEY \\
-        --out results/run-$(date +%Y%m%d-%H%M%S).json
+    python benchmarks/run_benchmarks.py \
+        --tasks benchmarks/tasks.json \
+        --agent-port 6473 \
+        --api-key $ANTHROPIC_API_KEY \
+        --projects-dir benchmarks/projects \
+        --rm-jar tools/RefactoringMiner.jar \
+        --out results/run.json
 
 Requirements:
     pip install anthropic requests
 
 The IntelliJ IDE with the plugin must be running with a project open before
 running this script (so the agent server is started on port 6473).
+
+Validation types (in tasks.json):
+  compile_and_file_exists      -- project compiles + expected file exists on disk
+  compile_and_no_reference     -- project compiles + deletedSymbol absent from sources
+  compile_and_symbol_exists    -- project compiles + expectedSymbol present in sources
+  compile_and_refactoringminer -- project compiles + RefactoringMiner detects expectedRefactoringType
+
+RefactoringMiner (optional):
+  Download from https://github.com/tsantalis/RefactoringMiner/releases
+  Pass the jar path via --rm-jar. Without it, compile+content checks still run.
 """
 
 import json
 import sys
 import time
 import argparse
+import subprocess
 import requests
 import anthropic
 from pathlib import Path
@@ -28,6 +41,8 @@ TOOL_SCHEMA_URL = "http://127.0.0.1:{port}/tools/schema"
 TOOL_CALL_URL   = "http://127.0.0.1:{port}/tools"
 STATUS_URL      = "http://127.0.0.1:{port}/status"
 
+
+# ── Agent interaction ────────────────────────────────────────────────────────
 
 def check_server(port: int) -> bool:
     try:
@@ -46,13 +61,13 @@ def call_tool(port: int, tool_name: str, params: dict) -> dict:
     return r.json()
 
 
-def run_task_with_agent(task: dict, port: int, api_key: str, model: str = "claude-sonnet-4-6",
+def run_task_with_agent(task: dict, port: int, api_key: str,
+                        model: str = "claude-sonnet-4-6",
                         max_turns: int = 12) -> dict:
     """Drive Claude with a natural-language instruction and collect tool calls."""
     schema_r = requests.get(TOOL_SCHEMA_URL.format(port=port), timeout=5)
     tools = schema_r.json()
 
-    # Inject project context from the running IDE
     status = requests.get(STATUS_URL.format(port=port), timeout=5).json()
     system_prompt = (
         "You are an expert software engineering assistant. "
@@ -103,24 +118,171 @@ def run_task_with_agent(task: dict, port: int, api_key: str, model: str = "claud
     return {"tool_calls": tool_calls_made, "turns": turns}
 
 
-def validate(task: dict, agent_result: dict) -> dict:
-    validation = task.get("validation", {})
-    vtype = validation.get("type", "")
+# ── Validation helpers ───────────────────────────────────────────────────────
+
+def run_maven_compile(project_dir: Path) -> dict:
+    """Compile the project. Returns {"ok": True} or {"ok": False, "error": "..."}."""
+    try:
+        result = subprocess.run(
+            ["mvn", "compile", "-q", "--no-transfer-progress"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode == 0:
+            return {"ok": True}
+        err = (result.stderr or result.stdout or "")[-2000:]
+        return {"ok": False, "error": err}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def grep_in_java_sources(project_dir: Path, pattern: str) -> list:
+    """Return matches (file:line: text) where pattern appears in .java source files."""
+    src_dir = project_dir / "src" / "main" / "java"
+    hits = []
+    for java_file in sorted(src_dir.rglob("*.java")):
+        try:
+            for i, line in enumerate(java_file.read_text(encoding="utf-8").splitlines(), 1):
+                if pattern in line:
+                    hits.append(f"{java_file.name}:{i}: {line.strip()}")
+        except Exception:
+            pass
+    return hits
+
+
+def ensure_git_repo(project_dir: Path) -> None:
+    """Initialize a standalone git repo in project_dir if not already present."""
+    if not (project_dir / ".git").exists():
+        subprocess.run(["git", "init"], cwd=project_dir, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "benchmark@example.com"],
+            cwd=project_dir, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Benchmark Runner"],
+            cwd=project_dir, capture_output=True,
+        )
+        print(f"  [git] Initialized repo in {project_dir}")
+
+
+def git_commit_all(project_dir: Path, message: str) -> str:
+    """Stage all changes and create a commit. Returns the new HEAD SHA."""
+    subprocess.run(["git", "add", "-A"], cwd=project_dir, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", message, "--allow-empty"],
+        cwd=project_dir, capture_output=True,
+    )
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project_dir, capture_output=True, text=True,
+    )
+    return result.stdout.strip()
+
+
+def run_refactoring_miner(
+    project_dir: Path,
+    rm_jar: str,
+    before_sha: str,
+    after_sha: str,
+    expected_type: str,
+) -> dict:
+    """
+    Run RefactoringMiner between two commits and check for the expected
+    refactoring type. Returns {"passed": bool|None, "notes": [...]}.
+
+    Download RefactoringMiner from:
+      https://github.com/tsantalis/RefactoringMiner/releases
+    Pass its path via --rm-jar.
+    """
+    if not rm_jar:
+        return {
+            "passed": None,
+            "notes": ["RefactoringMiner: jar not configured (use --rm-jar to enable)"],
+        }
+    rm_jar_path = Path(rm_jar)
+    if not rm_jar_path.exists():
+        return {"passed": None, "notes": [f"RefactoringMiner: jar not found at {rm_jar}"]}
+
+    rm_out = project_dir / "rm_output_tmp.json"
+    try:
+        result = subprocess.run(
+            ["java", "-jar", str(rm_jar_path),
+             "-bc", str(project_dir), before_sha, after_sha,
+             "-json", str(rm_out)],
+            capture_output=True, text=True, timeout=120,
+        )
+        if not rm_out.exists():
+            return {
+                "passed": False,
+                "notes": [f"RefactoringMiner: no output produced. stderr: {result.stderr[:400]}"],
+            }
+
+        rm_data = json.loads(rm_out.read_text(encoding="utf-8"))
+        found_types = []
+        for commit in rm_data.get("commits", []):
+            for ref in commit.get("refactorings", []):
+                found_types.append(ref.get("type", ""))
+
+        if expected_type in found_types:
+            return {
+                "passed": True,
+                "notes": [
+                    f"RefactoringMiner: detected '{expected_type}' "
+                    f"(all types: {found_types})"
+                ],
+            }
+        else:
+            return {
+                "passed": False,
+                "notes": [
+                    f"RefactoringMiner: expected '{expected_type}' "
+                    f"but detected: {found_types or ['(none)']}"
+                ],
+            }
+    except Exception as e:
+        return {"passed": False, "notes": [f"RefactoringMiner error: {e}"]}
+    finally:
+        if rm_out.exists():
+            rm_out.unlink()
+
+
+# ── Main validation ──────────────────────────────────────────────────────────
+
+def validate(
+    task: dict,
+    agent_result: dict,
+    project_root: Path,
+    before_sha: str = None,
+    rm_jar: str = None,
+) -> dict:
+    """
+    Multi-layer validation:
+      1. Tool-call layer  — all mutating tools returned ok:true, expected tools called
+      2. Compile layer    — Maven compile succeeds after changes
+      3. Content layer    — file/symbol presence or absence on disk
+      4. RM layer         — RefactoringMiner confirms expected refactoring type
+    """
     passed = True
     notes = []
+    validation = task.get("validation", {})
+    vtype = validation.get("type", "")
 
-    # All mutating tool calls must have returned ok: true
-    # (find_symbol, list_symbols, read_file, find_usages do not return ok/error)
-    READ_ONLY_TOOLS = {"find_symbol_by_name", "find_symbol", "list_symbols", "read_file", "find_usages"}
+    # ── Layer 1: tool-call checks ────────────────────────────────────────────
+    READ_ONLY_TOOLS = {
+        "find_symbol_by_name", "find_symbol", "list_symbols", "read_file", "find_usages",
+    }
     failed_calls = [
         c for c in agent_result["tool_calls"]
         if c["tool"] not in READ_ONLY_TOOLS and not c["result"].get("ok", False)
     ]
     for fc in failed_calls:
         passed = False
-        notes.append(f"Tool '{fc['tool']}' failed: {fc['result'].get('error', fc['result'])}")
+        notes.append(
+            f"Tool '{fc['tool']}' failed: {fc['result'].get('error', fc['result'])}"
+        )
 
-    # Expected tools must all have been called
     expected_tools = [op["tool"] for op in task.get("operations", [])]
     actual_tools   = [c["tool"] for c in agent_result["tool_calls"]]
     missing = [t for t in expected_tools if t not in actual_tools]
@@ -130,27 +292,88 @@ def validate(task: dict, agent_result: dict) -> dict:
     else:
         notes.append(f"All expected tools called: {expected_tools}")
 
-    # Type-specific validation
-    if vtype == "find_usages_non_empty":
-        usage_calls = [c for c in agent_result["tool_calls"] if c["tool"] == "find_usages"]
-        if usage_calls and usage_calls[-1]["result"].get("count", 0) == 0:
+    if not vtype.startswith("compile"):
+        return {"passed": passed, "notes": notes, "validation_type": vtype}
+
+    # ── Layer 2: compile check ───────────────────────────────────────────────
+    project_name = task.get("project", "")
+    project_dir  = (project_root / project_name) if project_name else None
+
+    if project_dir and project_dir.exists():
+        cr = run_maven_compile(project_dir)
+        if cr["ok"]:
+            notes.append("Compile: PASS")
+        else:
             passed = False
-            notes.append("find_usages returned 0 results")
-        elif usage_calls:
-            notes.append(f"find_usages returned {usage_calls[-1]['result'].get('count', '?')} results")
+            err_snippet = cr["error"][:300].replace("\n", " ")
+            notes.append(f"Compile: FAIL -- {err_snippet}")
+    else:
+        notes.append(f"Compile: skipped (project dir not found: {project_dir})")
+        project_dir = None
 
-    if vtype == "tool_called":
-        expected_tool = validation.get("expectedTool", "")
-        if expected_tool and expected_tool not in actual_tools:
-            passed = False
-            notes.append(f"Expected tool '{expected_tool}' was not called")
+    # ── Layer 3: disk-state checks ───────────────────────────────────────────
+    if project_dir:
+        if vtype == "compile_and_file_exists":
+            expected_file = validation.get("expectedFile", "")
+            if expected_file:
+                target = project_dir / "src" / "main" / "java" / expected_file
+                if target.exists():
+                    notes.append(f"File exists on disk: {expected_file}")
+                else:
+                    passed = False
+                    notes.append(f"File NOT found on disk: {expected_file}")
 
-    return {
-        "passed": passed,
-        "notes": notes,
-        "validation_type": vtype,
-    }
+        elif vtype == "compile_and_no_reference":
+            deleted_sym = validation.get("deletedSymbol", "")
+            if deleted_sym:
+                hits = grep_in_java_sources(project_dir, deleted_sym)
+                if hits:
+                    passed = False
+                    notes.append(
+                        f"Symbol '{deleted_sym}' still present in sources: "
+                        f"{hits[:3]}"
+                    )
+                else:
+                    notes.append(
+                        f"Symbol '{deleted_sym}' absent from all source files"
+                    )
 
+        elif vtype == "compile_and_symbol_exists":
+            expected_sym = validation.get("expectedSymbol", "")
+            if expected_sym:
+                name = expected_sym.split("#")[-1] if "#" in expected_sym else expected_sym
+                hits = grep_in_java_sources(project_dir, name)
+                if hits:
+                    notes.append(f"Symbol '{name}' found in sources: {hits[0]}")
+                else:
+                    passed = False
+                    notes.append(f"Symbol '{name}' NOT found in source files")
+
+        # ── Layer 4: RefactoringMiner ────────────────────────────────────────
+        if vtype == "compile_and_refactoringminer":
+            expected_type = validation.get("expectedRefactoringType", "")
+            if before_sha and project_dir:
+                # Get the after-task commit SHA
+                r = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=project_dir, capture_output=True, text=True,
+                )
+                after_sha = r.stdout.strip()
+                rm_result = run_refactoring_miner(
+                    project_dir, rm_jar, before_sha, after_sha, expected_type
+                )
+            else:
+                rm_result = run_refactoring_miner(
+                    project_dir, rm_jar, "", "", expected_type
+                )
+            notes.extend(rm_result["notes"])
+            if rm_result["passed"] is False:
+                passed = False
+
+    return {"passed": passed, "notes": notes, "validation_type": vtype}
+
+
+# ── Output ───────────────────────────────────────────────────────────────────
 
 def print_summary(results: list) -> None:
     passed = sum(1 for r in results if r["status"] == "PASS")
@@ -161,18 +384,30 @@ def print_summary(results: list) -> None:
         icon = "PASS" if r["status"] == "PASS" else "FAIL"
         print(f"  [{icon}] [{r['id']}]  ({r['turns']} turns, {r['elapsed_s']}s)")
         for note in r["validation"]["notes"]:
-            print(f"      • {note}")
+            print(f"      * {note}")
 
+
+# ── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Run structured-refactoring-agent benchmarks")
-    parser.add_argument("--tasks",      default="benchmarks/tasks.json")
-    parser.add_argument("--agent-port", type=int, default=6473)
-    parser.add_argument("--api-key",    required=True, help="Anthropic API key")
-    parser.add_argument("--model",      default="claude-sonnet-4-6", help="Claude model ID")
-    parser.add_argument("--max-turns",  type=int, default=12, help="Max tool-use turns per task")
-    parser.add_argument("--out",        default="results/run.json")
-    parser.add_argument("--task-id",    help="Run a single task by ID")
+    parser = argparse.ArgumentParser(
+        description="Run structured-refactoring-agent benchmarks"
+    )
+    parser.add_argument("--tasks",        default="benchmarks/tasks.json")
+    parser.add_argument("--agent-port",   type=int, default=6473)
+    parser.add_argument("--api-key",      required=True, help="Anthropic API key")
+    parser.add_argument("--model",        default="claude-sonnet-4-6")
+    parser.add_argument("--max-turns",    type=int, default=12)
+    parser.add_argument("--out",          default="results/run.json")
+    parser.add_argument("--task-id",      help="Run a single task by ID")
+    parser.add_argument(
+        "--projects-dir", default="benchmarks/projects",
+        help="Root directory containing benchmark project subdirectories",
+    )
+    parser.add_argument(
+        "--rm-jar", default="",
+        help="Path to RefactoringMiner JAR (enables refactoring type classification)",
+    )
     args = parser.parse_args()
 
     if not check_server(args.agent_port):
@@ -180,26 +415,60 @@ def main():
         print("       Open IntelliJ with the plugin installed and a project loaded.")
         sys.exit(1)
 
-    tasks = json.loads(Path(args.tasks).read_text())
+    tasks = json.loads(Path(args.tasks).read_text(encoding="utf-8"))
     if args.task_id:
         tasks = [t for t in tasks if t["id"] == args.task_id]
         if not tasks:
             print(f"Task '{args.task_id}' not found.")
             sys.exit(1)
 
+    projects_root = Path(args.projects_dir)
+    rm_jar = args.rm_jar or None
+
+    # Ensure every project used by the task list has a standalone git repo
+    # (required for RefactoringMiner's between-commit analysis)
+    seen_projects = set()
+    for task in tasks:
+        pname = task.get("project", "")
+        if pname and pname not in seen_projects:
+            pdir = projects_root / pname
+            if pdir.exists():
+                ensure_git_repo(pdir)
+            seen_projects.add(pname)
+
     results = []
     for task in tasks:
         print(f"\nRunning [{task['id']}]: {task['description'][:70]}...")
+
+        # Commit the current (pre-task) state as the baseline snapshot
+        before_sha = None
+        pname = task.get("project", "")
+        project_dir = (projects_root / pname) if pname else None
+        if project_dir and project_dir.exists():
+            before_sha = git_commit_all(project_dir, f"baseline-before-{task['id']}")
+
         t0 = time.time()
         try:
-            agent_result = run_task_with_agent(task, args.agent_port, args.api_key,
-                                               model=args.model, max_turns=args.max_turns)
-            validation   = validate(task, agent_result)
+            agent_result = run_task_with_agent(
+                task, args.agent_port, args.api_key,
+                model=args.model, max_turns=args.max_turns,
+            )
+
+            # Commit the post-task state so RefactoringMiner can diff the two commits
+            if project_dir and project_dir.exists():
+                git_commit_all(project_dir, f"after-{task['id']}")
+
+            validation = validate(
+                task, agent_result, projects_root,
+                before_sha=before_sha, rm_jar=rm_jar,
+            )
             status = "PASS" if validation["passed"] else "FAIL"
+
         except Exception as e:
             agent_result = {"tool_calls": [], "turns": 0}
             validation   = {"passed": False, "notes": [str(e)], "validation_type": "error"}
             status = "ERROR"
+
         elapsed = round(time.time() - t0, 2)
         print(f"  -> {status} in {elapsed}s ({agent_result['turns']} turns)")
         results.append({
@@ -214,8 +483,12 @@ def main():
 
     print_summary(results)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    output = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"), "tasks": results}
-    Path(args.out).write_text(json.dumps(output, indent=2))
+    output = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "agent": "structured",
+        "tasks": results,
+    }
+    Path(args.out).write_text(json.dumps(output, indent=2), encoding="utf-8")
     print(f"\nFull results written to {args.out}")
 
 
