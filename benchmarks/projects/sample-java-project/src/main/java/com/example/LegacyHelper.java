@@ -14,4 +14,14 @@ public class LegacyHelper {
     public static String parseNewFormat(String input) {
         return input.trim();
     }
+
+    /**
+     * Inline target — benchmark task inline-001 replaces every call with
+     * 'value.toLowerCase().trim()' and removes this declaration.
+     * A text-edit agent must manually substitute the parameter name at each
+     * call site; InlineMethodProcessor does it correctly by construction.
+     */
+    public static String normalize(String value) {
+        return value.toLowerCase().trim();
+    }
 }

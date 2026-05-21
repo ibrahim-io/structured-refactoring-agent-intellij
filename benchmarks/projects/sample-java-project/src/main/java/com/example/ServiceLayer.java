@@ -17,6 +17,10 @@ public class ServiceLayer {
         return LegacyHelper.parseNewFormat(raw);
     }
 
+    public String normalizeInput(String raw) {
+        return LegacyHelper.normalize(raw);
+    }
+
     public String processOrder(String orderId) {
         return "Order " + orderId + " on " + DateHelper.format(LocalDate.now());
     }

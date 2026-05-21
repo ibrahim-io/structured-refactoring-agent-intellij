@@ -175,6 +175,18 @@ class SchemaHandler : HttpHandler {
             }
           },
           {
+            "name": "inline_method",
+            "description": "Inline a Java method: replace every call site with the method body (with correct parameter substitution) and optionally delete the original declaration. Uses IntelliJ's InlineMethodProcessor, which handles edge cases such as parameter shadowing, complex expressions, and multiple return paths that text-edit approaches cannot do reliably.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "qualifiedName":  { "type": "string",  "description": "Qualified name of the method to inline, e.g. 'com.example.Foo#helperMethod'." },
+                "deleteOriginal": { "type": "boolean", "description": "If true (default), delete the original method declaration after inlining all calls." }
+              },
+              "required": ["qualifiedName"]
+            }
+          },
+          {
             "name": "add_kt_property",
             "description": "Add a property to an existing Kotlin class or object. Requires the Kotlin plugin.",
             "input_schema": {

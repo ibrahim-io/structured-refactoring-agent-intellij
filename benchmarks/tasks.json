@@ -68,6 +68,19 @@
     }
   },
   {
+    "id": "inline-001",
+    "description": "Inline the method com.example.LegacyHelper#normalize: replace every call site with the method body (substituting the parameter) and delete the original method.",
+    "project": "sample-java-project",
+    "operations": [
+      { "tool": "inline_method", "params": { "qualifiedName": "com.example.LegacyHelper#normalize", "deleteOriginal": true } }
+    ],
+    "validation": {
+      "type": "compile_and_no_reference",
+      "deletedSymbol": "normalize",
+      "note": "ServiceLayer.normalizeInput calls normalize — InlineMethodProcessor substitutes the body with correct parameter mapping. A text-edit agent must manually perform parameter substitution, risking correctness errors."
+    }
+  },
+  {
     "id": "change-sig-001",
     "description": "Change the signature of com.example.Notifier#send to add a second parameter 'int priority' with default value 0.",
     "project": "sample-java-project",

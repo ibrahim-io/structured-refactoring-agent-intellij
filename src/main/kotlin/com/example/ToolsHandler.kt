@@ -156,6 +156,12 @@ class ToolsHandler(private val project: Project) : HttpHandler {
                 ).toJson()
             }
 
+            // ── Inline tools ─────────────────────────────────────────────────
+            "inline_method" -> refactor.inlineMethod(
+                qualifiedName  = params.getString("qualifiedName"),
+                deleteOriginal = params.optBoolean("deleteOriginal", true),
+            ).toJson()
+
             // ── Extract tools ────────────────────────────────────────────────
             "extract_method" -> refactor.extractMethod(
                 filePath = params.getString("filePath"),

@@ -40,6 +40,7 @@ import com.intellij.refactoring.changeSignature.ParameterInfoImpl
 import com.intellij.refactoring.util.CanonicalTypes
 import com.intellij.refactoring.move.moveClassesOrPackages.MoveClassesOrPackagesProcessor
 import com.intellij.refactoring.move.moveClassesOrPackages.SingleSourceRootMoveDestination
+import com.intellij.refactoring.inline.InlineMethodProcessor
 import com.intellij.refactoring.rename.RenameProcessor
 import com.intellij.refactoring.safeDelete.SafeDeleteProcessor
 import org.jetbrains.kotlin.psi.KtClass
@@ -385,6 +386,37 @@ class RefactorService(private val project: Project) {
                 /* propagateExceptionsMethods = */ emptySet(),
             ).run()
             Result.Ok("Changed signature of '${method.name}'")
+        }
+    }
+
+    // ── Inline Method ────────────────────────────────────────────────────────
+
+    /**
+     * Inline a method: replace every call site with the method body (with parameter
+     * substitution) and optionally delete the original declaration.
+     *
+     * Uses IntelliJ's InlineMethodProcessor, which handles all edge cases —
+     * parameter substitution, name shadowing, return-value extraction — that
+     * text-edit approaches cannot do correctly.
+     */
+    fun inlineMethod(qualifiedName: String, deleteOriginal: Boolean = true): Result {
+        val method = ReadAction.compute<PsiMethod?, RuntimeException> {
+            resolveQualifiedName(qualifiedName) as? PsiMethod
+        } ?: return Result.Err("'$qualifiedName' did not resolve to a method")
+
+        val methodName = ReadAction.compute<String, RuntimeException> { method.name }
+
+        return runProcessorOnEdt {
+            InlineMethodProcessor(
+                project,
+                method,
+                null,           // reference: null = inline all occurrences
+                null,           // editor: null = no dialog
+                false,          // inlineThisOnly: false = inline every call site
+                deleteOriginal, // removeOriginalMethod
+                true,           // isWritable
+            ).run()
+            Result.Ok("Inlined method '$methodName'${if (deleteOriginal) " and deleted original" else ""}")
         }
     }
 
