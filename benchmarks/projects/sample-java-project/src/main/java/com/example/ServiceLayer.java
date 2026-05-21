@@ -5,11 +5,15 @@ import com.example.utils.DateHelper;
 import java.time.LocalDate;
 
 /**
- * Cross-file caller used by benchmark tasks.
- * - rename-method-002: after LegacyHelper.parseNewFormat is renamed to
- *   parseInput, the structured agent's ReferencesSearch finds this call
- *   site and updates it via handleElementRename. A text-edit agent that
- *   only edits LegacyHelper.java leaves this call broken -> compile failure.
+ * Cross-file caller used by multiple benchmark tasks.
+ * - move-001: imports com.example.utils.DateHelper. After DateHelper moves
+ *   to com.example.common, MoveClassesOrPackagesProcessor updates this import
+ *   automatically. A text-edit agent may miss this file -> compile failure.
+ * - rename-method-002: calls LegacyHelper.parseNewFormat. After rename to
+ *   parseInput, ReferencesSearch + handleElementRename updates this call.
+ *   A text-edit agent editing only LegacyHelper.java leaves this broken.
+ * - inline-001: calls LegacyHelper.normalize. InlineMethodProcessor replaces
+ *   the call with 'raw.toLowerCase().trim()' (correct parameter substitution).
  */
 public class ServiceLayer {
 
