@@ -41,3 +41,7 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+
+### Benchmark projects (cloned externally) ###
+benchmarks/projects/spring-petclinic/
+results/

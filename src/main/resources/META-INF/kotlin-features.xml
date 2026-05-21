@@ -1,0 +1,6 @@
+<idea-plugin>
+    <!-- Additional services and actions that require the Kotlin plugin -->
+    <extensions defaultExtensionNs="com.intellij">
+        <projectService serviceImplementation="com.example.KotlinCreationService"/>
+    </extensions>
+</idea-plugin>

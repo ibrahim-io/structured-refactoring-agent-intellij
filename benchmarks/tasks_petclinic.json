@@ -1,0 +1,63 @@
+[
+  {
+    "id": "pc-rename-001",
+    "description": "Rename the field 'telephone' in class org.springframework.samples.petclinic.owner.Owner to 'phoneNumber'.",
+    "project": "spring-petclinic",
+    "projectTag": "3.3.0",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Owner#telephone" } },
+      { "tool": "rename_symbol", "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Owner#telephone", "newName": "phoneNumber" } }
+    ],
+    "validation": { "type": "compile_and_refactoringminer", "expectedRefactoringType": "Rename Attribute" }
+  },
+  {
+    "id": "pc-add-method-001",
+    "description": "Add a method 'String getFullName()' to class org.springframework.samples.petclinic.owner.Owner that returns firstName + \" \" + lastName.",
+    "project": "spring-petclinic",
+    "projectTag": "3.3.0",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Owner" } },
+      { "tool": "find_usages",         "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Owner" } },
+      { "tool": "read_file",           "params": { "filePath": "__resolved__" } },
+      { "tool": "add_method",          "params": {
+          "filePath":   "__resolved_from_find_symbol__",
+          "className":  "Owner",
+          "methodText": "public String getFullName() { return getFirstName() + \" \" + getLastName(); }"
+      }}
+    ],
+    "validation": { "type": "compile_and_symbol_exists", "expectedSymbol": "org.springframework.samples.petclinic.owner.Owner#getFullName" }
+  },
+  {
+    "id": "pc-find-usages-001",
+    "description": "Find all usages of the class org.springframework.samples.petclinic.owner.Pet and report how many references exist across the project.",
+    "project": "spring-petclinic",
+    "projectTag": "3.3.0",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Pet" } },
+      { "tool": "find_usages",         "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Pet" } }
+    ],
+    "validation": { "type": "find_usages_non_empty" }
+  },
+  {
+    "id": "pc-read-file-001",
+    "description": "Read the first 30 lines of the Owner class in the spring-petclinic project and describe its fields.",
+    "project": "spring-petclinic",
+    "projectTag": "3.3.0",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Owner" } },
+      { "tool": "read_file",           "params": { "filePath": "__resolved__", "endLine": 50 } }
+    ],
+    "validation": { "type": "tool_called", "expectedTool": "read_file" }
+  },
+  {
+    "id": "pc-rename-002",
+    "description": "Rename the class org.springframework.samples.petclinic.system.CrashController to PanicController.",
+    "project": "spring-petclinic",
+    "projectTag": "3.3.0",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "org.springframework.samples.petclinic.system.CrashController" } },
+      { "tool": "rename_symbol",       "params": { "qualifiedName": "org.springframework.samples.petclinic.system.CrashController", "newName": "PanicController" } }
+    ],
+    "validation": { "type": "compile_and_refactoringminer", "expectedRefactoringType": "Rename Class" }
+  }
+]

@@ -1,0 +1,74 @@
+[
+  {
+    "id": "rename-001",
+    "description": "Rename the field 'usrNm' in class com.example.User to 'username'.",
+    "project": "sample-java-project",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "com.example.User#usrNm" } },
+      { "tool": "rename_symbol",       "params": { "qualifiedName": "com.example.User#usrNm", "newName": "username" } }
+    ],
+    "validation": { "type": "compile_and_refactoringminer", "expectedRefactoringType": "Rename Attribute" }
+  },
+  {
+    "id": "move-001",
+    "description": "Move class com.example.utils.DateHelper to package com.example.common.",
+    "project": "sample-java-project",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "com.example.utils.DateHelper" } },
+      { "tool": "move_class",          "params": { "qualifiedClassName": "com.example.utils.DateHelper", "targetPackage": "com.example.common" } }
+    ],
+    "validation": { "type": "compile_and_refactoringminer", "expectedRefactoringType": "Move Class" }
+  },
+  {
+    "id": "safe-delete-001",
+    "description": "Safe-delete the unused method com.example.LegacyHelper#parseOldFormat.",
+    "project": "sample-java-project",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "com.example.LegacyHelper#parseOldFormat" } },
+      { "tool": "safe_delete",         "params": { "qualifiedName": "com.example.LegacyHelper#parseOldFormat" } }
+    ],
+    "validation": { "type": "compile_and_no_reference" }
+  },
+  {
+    "id": "create-class-001",
+    "description": "Create a new interface PaymentGateway in package com.example.payments with a method 'boolean charge(double amount)'.",
+    "project": "sample-java-project",
+    "operations": [
+      { "tool": "create_java_file", "params": {
+        "packageName": "com.example.payments",
+        "fileName": "PaymentGateway.java",
+        "content": "package com.example.payments;\n\npublic interface PaymentGateway {\n    boolean charge(double amount);\n}\n"
+      }}
+    ],
+    "validation": { "type": "compile_and_file_exists", "expectedFile": "com/example/payments/PaymentGateway.java" }
+  },
+  {
+    "id": "add-method-001",
+    "description": "Add a method 'String getDisplayName()' to class com.example.User that returns firstName + \" \" + lastName.",
+    "project": "sample-java-project",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "com.example.User" } },
+      { "tool": "add_method",          "params": {
+        "filePath": "__resolved_from_find_symbol__",
+        "className": "User",
+        "methodText": "public String getDisplayName() { return firstName + \" \" + lastName; }"
+      }}
+    ],
+    "validation": { "type": "compile_and_symbol_exists", "expectedSymbol": "com.example.User#getDisplayName" }
+  },
+  {
+    "id": "change-sig-001",
+    "description": "Change the signature of com.example.Notifier#send to add a second parameter 'int priority' with default value 0.",
+    "project": "sample-java-project",
+    "operations": [
+      { "tool": "change_signature", "params": {
+        "qualifiedName": "com.example.Notifier#send",
+        "parameterChanges": [
+          { "name": "message",  "type": "String", "oldIndex": "0" },
+          { "name": "priority", "type": "int",    "oldIndex": "-1", "defaultValue": "0" }
+        ]
+      }}
+    ],
+    "validation": { "type": "compile_and_refactoringminer", "expectedRefactoringType": "Add Parameter" }
+  }
+]

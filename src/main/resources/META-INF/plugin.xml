@@ -1,38 +1,92 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <!-- Unique identifier of the plugin. It should be FQN. It cannot be changed between the plugin versions. -->
     <id>org.example.structured-refactoring-agent-intellij</id>
 
-    <!-- Public plugin name should be written in Title Case.
-         Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-name -->
     <name>Structured-refactoring-agent</name>
 
-    <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
-    <vendor url="https://www.yourcompany.com">YourCompany</vendor>
+    <vendor url="https://github.com/ibrahim-io">ibrahim-io</vendor>
 
-    <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
-         Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-description -->
     <description><![CDATA[
-        Enter short description for your plugin here.<br>
-        <em>most HTML tags may be used</em>
+        <h3>Structured Refactoring Agent</h3>
+        <p>Drives IntelliJ's built-in structured refactorings (rename, extract, inline, safe-delete, move)
+        through the IDE <em>and</em> through a local tool API so an external LLM agent can call them.</p>
+        <p>All refactorings use IntelliJ's AST-aware refactoring engine — usages, imports, comments, and string
+        occurrences are updated together, never raw text replacement.</p>
+        <ul>
+          <li>Caret-driven actions under the <b>Refactor</b> menu.</li>
+          <li>Localhost HTTP tool surface for agent integration (JSON tool schema).</li>
+        </ul>
     ]]></description>
 
-    <!-- Product and plugin compatibility requirements.
-         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+    <depends optional="true" config-file="kotlin-features.xml">org.jetbrains.kotlin</depends>
 
-    <!-- Extension points defined by the plugin.
-         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
     <extensions defaultExtensionNs="com.intellij">
-
+        <applicationService serviceImplementation="com.example.ApiKeyService"/>
+        <applicationService serviceImplementation="com.example.AgentRefactorSettings"/>
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.example.AgentRefactorConfigurable"
+                id="com.example.AgentRefactorConfigurable"
+                displayName="Agent Refactor"/>
+        <projectService serviceImplementation="com.example.RefactorService"/>
+        <projectService serviceImplementation="com.example.PsiCreationService"/>
+        <projectService serviceImplementation="com.example.AgentToolServer"/>
+        <postStartupActivity implementation="com.example.AgentToolServerStartup"/>
+        <toolWindow id="Agent Refactor"
+                    factoryClass="com.example.AgentToolWindowFactory"
+                    anchor="right"
+                    canCloseContents="false"
+                    icon="/icons/pluginIcon.svg"/>
     </extensions>
 
     <actions>
-        <action id="com.example.AgentRenameAtCaretAction"
-                class="com.example.AgentRenameAtCaretAction"
-                text="Agent: Rename at Caret"
-                description="Rename the symbol at caret using IntelliJ's structured refactoring">
+        <group id="com.example.AgentRefactorGroup"
+               text="Agent Refactor"
+               description="AST-aware structured refactorings driven by the agent"
+               popup="false">
             <add-to-group group-id="RefactoringMenu" anchor="last"/>
-        </action>
+
+            <action id="com.example.AgentRenameAtCaretAction"
+                    class="com.example.AgentRenameAtCaretAction"
+                    text="Agent: Rename at Caret"
+                    description="Rename the symbol at caret using IntelliJ's structured refactoring"/>
+
+            <action id="com.example.AgentExtractMethodAction"
+                    class="com.example.AgentExtractMethodAction"
+                    text="Agent: Extract Method (selection)"
+                    description="Extract the selected code block into a new method"/>
+
+            <action id="com.example.AgentExtractVariableAction"
+                    class="com.example.AgentExtractVariableAction"
+                    text="Agent: Extract Variable (selection)"
+                    description="Extract the selected expression into a local variable"/>
+
+            <action id="com.example.AgentInlineAtCaretAction"
+                    class="com.example.AgentInlineAtCaretAction"
+                    text="Agent: Inline at Caret"
+                    description="Inline the method or variable at caret"/>
+
+            <action id="com.example.AgentSafeDeleteAtCaretAction"
+                    class="com.example.AgentSafeDeleteAtCaretAction"
+                    text="Agent: Safe Delete at Caret"
+                    description="Safe-delete the symbol at caret after checking usages"/>
+
+            <action id="com.example.AgentAddMemberAction"
+                    class="com.example.AgentAddMemberAction"
+                    text="Agent: Add Member to Class at Caret"
+                    description="Add a field, method, or inner class/interface to the class under the caret"/>
+
+            <action id="com.example.AgentMoveClassAction"
+                    class="com.example.AgentMoveClassAction"
+                    text="Agent: Move Class to Package"
+                    description="Move the class in the current file to a different package"/>
+
+            <action id="com.example.AgentChangeSignatureAction"
+                    class="com.example.AgentChangeSignatureAction"
+                    text="Agent: Change Signature at Caret"
+                    description="Open IntelliJ's Change Signature dialog for the method at caret"/>
+        </group>
     </actions>
 </idea-plugin>

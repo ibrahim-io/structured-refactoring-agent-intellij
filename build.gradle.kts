@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "org.example"
-version = "1.0-SNAPSHOT"
+version = "0.2.0"
 
 repositories {
     mavenCentral()
@@ -17,12 +17,14 @@ repositories {
 // Configure IntelliJ Platform Gradle Plugin
 // Read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin.html
 dependencies {
+    implementation("org.json:json:20240303")
+
     intellijPlatform {
         create("IC", "2025.1.4.1")
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
 
-        // Add necessary plugin dependencies for compilation here, example:
-        // bundledPlugin("com.intellij.java")
+        bundledPlugin("com.intellij.java")
+        bundledPlugin("org.jetbrains.kotlin")
     }
 }
 
@@ -33,7 +35,11 @@ intellijPlatform {
         }
 
         changeNotes = """
-            Initial version
+            <ul>
+              <li>0.2.0 — Settings UI (port, model, max turns); extract_method and extract_variable tools;
+                  read_file and find_usages tools; Kotlin creation tools; project context injection.</li>
+              <li>0.1.0 — AST-safe Rename at Caret action; localhost agent tool surface.</li>
+            </ul>
         """.trimIndent()
     }
 }

@@ -8,8 +8,7 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiNamedElement
 
-
-class AgentRenameAtCaretAction : AnAction("Agent: Rename at Caret") {
+class AgentSafeDeleteAtCaretAction : AnAction("Agent: Safe Delete at Caret") {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val editor = e.getData(CommonDataKeys.EDITOR) ?: return
@@ -17,27 +16,26 @@ class AgentRenameAtCaretAction : AnAction("Agent: Rename at Caret") {
 
         val offset = editor.caretModel.offset
         val raw = psiFile.findElementAt(offset) ?: run {
-            Messages.showInfoMessage(project, "No element at caret.", "Agent Rename")
+            Messages.showInfoMessage(project, "No element at caret.", "Agent Safe Delete")
             return
         }
         val named = findNamedAncestor(raw) ?: run {
-            Messages.showInfoMessage(project, "No renamable symbol at caret.", "Agent Rename")
+            Messages.showInfoMessage(project, "No deletable symbol at caret.", "Agent Safe Delete")
             return
         }
 
-        val currentName = named.name ?: "<unnamed>"
-        val newName = Messages.showInputDialog(
+        val name = named.name ?: "<unnamed>"
+        val confirm = Messages.showYesNoDialog(
             project,
-            "Rename \"$currentName\" to:",
-            "Agent Rename",
+            "Safe-delete \"$name\"? This checks for usages first.",
+            "Agent Safe Delete",
             Messages.getQuestionIcon(),
-            "",
-            null,
-        ) ?: return
+        )
+        if (confirm != Messages.YES) return
 
-        when (val result = project.service<RefactorService>().rename(named, newName)) {
-            is RefactorService.Result.Ok -> Messages.showInfoMessage(project, result.message, "Agent Rename")
-            is RefactorService.Result.Err -> Messages.showErrorDialog(project, result.message, "Agent Rename")
+        when (val result = project.service<RefactorService>().safeDelete(named)) {
+            is RefactorService.Result.Ok -> Messages.showInfoMessage(project, result.message, "Agent Safe Delete")
+            is RefactorService.Result.Err -> Messages.showErrorDialog(project, result.message, "Agent Safe Delete")
         }
     }
 
