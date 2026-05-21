@@ -41,19 +41,20 @@ Tasks cover: rename attribute, add method, find_usages inspection, read_file ins
 
 ## 3. Benchmark Tasks (`benchmarks/tasks.json`)
 
-Seven tasks spanning six refactoring operation types:
+Eight tasks spanning seven refactoring operation types:
 
 | Task ID | Operation | Cross-file effect |
 |---|---|---|
 | `rename-001` | Rename field `User.usrNm` → `username` | Within single file (field is `private`) |
 | `rename-method-002` | Rename method `LegacyHelper.parseNewFormat` → `parseInput` | **Cross-file**: `ServiceLayer.java` calls the old name |
-| `move-001` | Move `com.example.utils.DateHelper` → `com.example.common` | **Cross-file**: `OrderProcessor.java` imports old package |
+| `move-001` | Move `com.example.utils.DateHelper` → `com.example.common` | **Cross-file**: `OrderProcessor.java` and `ServiceLayer.java` import old package |
 | `safe-delete-001` | Delete unused method `LegacyHelper.parseOldFormat` | Symbol removed from codebase |
+| `inline-001` | Inline `LegacyHelper.normalize` with parameter substitution | **Structural**: `ServiceLayer.normalizeInput` calls it; requires correct param substitution |
 | `create-class-001` | Create interface `com.example.payments.PaymentGateway` | New file on disk |
 | `add-method-001` | Add `User.getDisplayName()` | Symbol added to existing class |
 | `change-sig-001` | Add `int priority` to `Notifier.send` signature | **Cross-file**: `NotificationController.java` calls old signature |
 
-The three tasks with "Cross-file effect" are the **key differentiators**: the structured agent handles them correctly via the IntelliJ refactoring APIs; the text-edit baseline is expected to produce compilation failures.
+Three cross-file tasks (`rename-method-002`, `move-001`, `change-sig-001`) and one structurally complex task (`inline-001`) are the **key differentiators**: the structured agent handles them via IntelliJ's refactoring APIs; the text-edit baseline is expected to fail or produce compilation errors.
 
 ---
 
@@ -152,7 +153,7 @@ Task ID              Structured    Text-Edit    Advantage
 ====================================================================
 ```
 
-Expected hypothesis: structured agent wins on all three cross-file tasks (`rename-method-002`, `move-001`, `change-sig-001`). Text-edit agent succeeds only on single-file operations.
+Expected hypothesis: structured agent wins on all four structurally complex tasks (`rename-method-002`, `move-001`, `inline-001`, `change-sig-001`). Text-edit agent succeeds on single-file operations but fails on cross-file/structural tasks.
 
 ---
 
@@ -172,10 +173,10 @@ Expected hypothesis: structured agent wins on all three cross-file tasks (`renam
 
 ## 8. Expected Results (Hypothesis)
 
-| Agent | Same-file tasks | Cross-file tasks | Overall |
+| Agent | Single-file tasks | Structural/cross-file tasks | Overall |
 |---|---|---|---|
-| Structured (IntelliJ AST) | 7/7 (100%) | 3/3 (100%) | **7/7** |
-| Text-edit (raw file I/O) | 4/4 (100%) | ~0/3 (0%) | **~4/7** |
+| Structured (IntelliJ AST) | 4/4 (100%) | 4/4 (100%) | **8/8** |
+| Text-edit (raw file I/O) | 4/4 (100%) | ~0/4 (0%) | **~4/8** |
 
 The structural advantage manifests specifically and exclusively on cross-file refactorings. This is the core empirical claim of the thesis: **IntelliJ's refactoring APIs encode program semantics that text-edit approaches do not have access to.**
 
