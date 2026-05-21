@@ -30,7 +30,7 @@ class PsiCreationService(private val project: Project) {
     // ── Members on existing classes ──────────────────────────────────────────
 
     fun addField(filePath: String, className: String?, fieldText: String): Result {
-        val cls = findClass(filePath, className)
+        val cls = ReadAction.compute<PsiClass?, RuntimeException> { findClass(filePath, className) }
             ?: return Result.Err("Class '${className ?: "<first>"}' not found in $filePath")
         val factory = JavaPsiFacade.getElementFactory(project)
         return runWriteOnEdt("Agent Add Field") {
@@ -42,7 +42,7 @@ class PsiCreationService(private val project: Project) {
     }
 
     fun addMethod(filePath: String, className: String?, methodText: String): Result {
-        val cls = findClass(filePath, className)
+        val cls = ReadAction.compute<PsiClass?, RuntimeException> { findClass(filePath, className) }
             ?: return Result.Err("Class '${className ?: "<first>"}' not found in $filePath")
         val factory = JavaPsiFacade.getElementFactory(project)
         return runWriteOnEdt("Agent Add Method") {
@@ -54,7 +54,7 @@ class PsiCreationService(private val project: Project) {
     }
 
     fun addInnerClass(filePath: String, outerClassName: String?, innerClassText: String): Result {
-        val outer = findClass(filePath, outerClassName)
+        val outer = ReadAction.compute<PsiClass?, RuntimeException> { findClass(filePath, outerClassName) }
             ?: return Result.Err("Class '${outerClassName ?: "<first>"}' not found in $filePath")
         val factory = JavaPsiFacade.getElementFactory(project)
         return runWriteOnEdt("Agent Add Inner Class") {
@@ -130,6 +130,9 @@ class PsiCreationService(private val project: Project) {
             } catch (t: Throwable) {
                 Result.Err(t.message ?: t.javaClass.simpleName)
             }
+            // Flush PSI → document → disk after the write action completes
+            PsiDocumentManager.getInstance(project).commitAllDocuments()
+            FileDocumentManager.getInstance().saveAllDocuments()
         }
         return ref[0] ?: Result.Err("no result")
     }

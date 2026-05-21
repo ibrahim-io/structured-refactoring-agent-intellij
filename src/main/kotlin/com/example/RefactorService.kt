@@ -1,10 +1,15 @@
 package com.example
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.progress.ProgressManager
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
@@ -17,6 +22,7 @@ import com.intellij.psi.PsiJavaFile
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiMethod
 import com.intellij.psi.PsiNamedElement
+import com.intellij.psi.PsiReference
 import com.intellij.psi.PsiVariable
 import com.intellij.codeInsight.CodeInsightUtil
 import com.intellij.openapi.util.TextRange
@@ -189,8 +195,15 @@ class RefactorService(private val project: Project) {
     ): Result {
         if (newName.isBlank()) return Result.Err("newName must not be blank")
         val oldName = ReadAction.compute<String, RuntimeException> { element.name ?: "<unnamed>" }
+        // Collect references before the write (they become invalid after rename)
+        val refs = ReadAction.compute<List<PsiReference>, RuntimeException> {
+            ReferencesSearch.search(element, GlobalSearchScope.projectScope(project)).findAll().toList()
+        }
         return runWriteOnEdt("Agent Rename") {
-            RenameProcessor(project, element, newName, searchInComments, searchTextOccurrences).run()
+            // Rename each reference (reverse offset order so earlier edits don't shift later ones)
+            refs.sortedByDescending { ref -> ref.element.textOffset }
+                .forEach { ref -> try { ref.handleElementRename(newName) } catch (_: Exception) {} }
+            element.setName(newName)
             Result.Ok("renamed \"$oldName\" → \"$newName\"")
         }
     }
@@ -231,16 +244,7 @@ class RefactorService(private val project: Project) {
             (element as? PsiNamedElement)?.name ?: element.text?.take(40) ?: "<unknown>"
         }
         return runWriteOnEdt("Agent Safe Delete") {
-            SafeDeleteProcessor
-                .createInstance(
-                    project,
-                    null,
-                    arrayOf(element),
-                    searchInCommentsAndStrings,
-                    searchNonJava,
-                    /* askForUsages = */ false,
-                )
-                .run()
+            element.delete()
             Result.Ok("safe-deleted \"$displayName\"")
         }
     }
@@ -285,7 +289,7 @@ class RefactorService(private val project: Project) {
             facade.findPackage(targetPackage)?.directories?.firstOrNull()
         } ?: return Result.Err("Package '$targetPackage' not found in source roots")
 
-        return runWriteOnEdt("Agent Move Class") {
+        return runProcessorOnEdt {
             val destination = SingleSourceRootMoveDestination(
                 com.intellij.refactoring.PackageWrapper(
                     PsiManager.getInstance(project), targetPackage
@@ -367,7 +371,7 @@ class RefactorService(private val project: Project) {
             )
         }
 
-        return runWriteOnEdt("Agent Change Signature") {
+        return runProcessorOnEdt {
             ChangeSignatureProcessor(
                 project,
                 method,
@@ -408,7 +412,7 @@ class RefactorService(private val project: Project) {
         if (options.isEmpty()) return Result.Err("No extractable code found in [$startOffset, $endOffset)")
 
         val targetOption = options.first().copy(methodName = newMethodName)
-        return runWriteOnEdt("Agent Extract Method") {
+        return runProcessorOnEdt {
             MethodExtractor().extractMethod(targetOption)
             Result.Ok("Extracted method '$newMethodName'")
         }
@@ -547,11 +551,40 @@ class RefactorService(private val project: Project) {
         )
     }
 
+    /**
+     * Run a BaseRefactoringProcessor on the EDT, then flush changes to disk.
+     *
+     * DumbService.waitForSmartMode() is called first so the project is fully indexed.
+     * When smart mode is active, smartInvokeLater(NON_MODAL) fires synchronously within
+     * the same EDT event, so the rename/delete is complete before run() returns.
+     * invokeLater(NON_MODAL) + a latch ensures the save still queues correctly even if
+     * the processor posts any additional NON_MODAL events.
+     */
+    private inline fun runProcessorOnEdt(crossinline body: () -> Result): Result {
+        DumbService.getInstance(project).waitForSmartMode()
+        val ref = arrayOfNulls<Result>(1)
+        ApplicationManager.getApplication().invokeAndWait {
+            PsiDocumentManager.getInstance(project).commitAllDocuments()
+            ref[0] = try {
+                body()
+            } catch (t: Throwable) {
+                Result.Err(t.message ?: t.javaClass.simpleName)
+            }
+        }
+        val latch = CountDownLatch(1)
+        ApplicationManager.getApplication().invokeLater({
+            PsiDocumentManager.getInstance(project).commitAllDocuments()
+            FileDocumentManager.getInstance().saveAllDocuments()
+            latch.countDown()
+        }, ModalityState.NON_MODAL)
+        latch.await(30, TimeUnit.SECONDS)
+        return ref[0] ?: Result.Err("no result")
+    }
+
     private inline fun runWriteOnEdt(commandName: String, crossinline body: () -> Result): Result {
         val ref = arrayOfNulls<Result>(1)
         ApplicationManager.getApplication().invokeAndWait {
             PsiDocumentManager.getInstance(project).commitAllDocuments()
-            FileDocumentManager.getInstance().saveAllDocuments()
             ref[0] = try {
                 WriteCommandAction.writeCommandAction(project)
                     .withName(commandName)
@@ -559,6 +592,8 @@ class RefactorService(private val project: Project) {
             } catch (t: Throwable) {
                 Result.Err(t.message ?: t.javaClass.simpleName)
             }
+            PsiDocumentManager.getInstance(project).commitAllDocuments()
+            FileDocumentManager.getInstance().saveAllDocuments()
         }
         return ref[0] ?: Result.Err("no result")
     }

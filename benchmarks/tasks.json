@@ -22,8 +22,7 @@
     "description": "Safe-delete the unused method com.example.LegacyHelper#parseOldFormat.",
     "project": "sample-java-project",
     "operations": [
-      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "com.example.LegacyHelper#parseOldFormat" } },
-      { "tool": "safe_delete",         "params": { "qualifiedName": "com.example.LegacyHelper#parseOldFormat" } }
+      { "tool": "safe_delete", "params": { "qualifiedName": "com.example.LegacyHelper#parseOldFormat" } }
     ],
     "validation": { "type": "compile_and_no_reference" }
   },
