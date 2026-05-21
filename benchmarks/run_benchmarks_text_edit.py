@@ -285,6 +285,26 @@ def validate(task: dict, agent_result: dict, project_dir: Path) -> dict:
                     passed = False
                     notes.append(f"Symbol '{name}' NOT found in source files")
 
+            if validation.get("crossFileCheck"):
+                old_name = None
+                for op in task.get("operations", []):
+                    if op.get("tool") == "rename_symbol":
+                        qn = op.get("params", {}).get("qualifiedName", "")
+                        old_name = qn.split("#")[-1] if "#" in qn else None
+                        break
+                if old_name:
+                    stale = grep_in_java_sources(project_dir, old_name)
+                    if stale:
+                        passed = False
+                        notes.append(
+                            f"Cross-file: old name '{old_name}' still in sources: "
+                            f"{stale[:5]}"
+                        )
+                    else:
+                        notes.append(
+                            f"Cross-file: old name '{old_name}' absent from all source files"
+                        )
+
         elif vtype == "compile_and_refactoringminer":
             # Text-edit agent has no structural classification
             notes.append("RefactoringMiner: N/A for text-edit agent")

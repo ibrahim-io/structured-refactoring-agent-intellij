@@ -349,6 +349,28 @@ def validate(
                     passed = False
                     notes.append(f"Symbol '{name}' NOT found in source files")
 
+            # Cross-file check: verify old name is gone from ALL files.
+            # Catches text-edit agents that only edit the declaration file.
+            if validation.get("crossFileCheck"):
+                old_name = None
+                for op in task.get("operations", []):
+                    if op.get("tool") == "rename_symbol":
+                        qn = op.get("params", {}).get("qualifiedName", "")
+                        old_name = qn.split("#")[-1] if "#" in qn else None
+                        break
+                if old_name:
+                    stale = grep_in_java_sources(project_dir, old_name)
+                    if stale:
+                        passed = False
+                        notes.append(
+                            f"Cross-file: old name '{old_name}' still in sources: "
+                            f"{stale[:5]}"
+                        )
+                    else:
+                        notes.append(
+                            f"Cross-file: old name '{old_name}' absent from all source files"
+                        )
+
         # ── Layer 4: RefactoringMiner ────────────────────────────────────────
         if vtype == "compile_and_refactoringminer":
             expected_type = validation.get("expectedRefactoringType", "")
