@@ -20,6 +20,8 @@ Requirements:
 """
 
 import json
+import os
+import re
 import sys
 import time
 import argparse
@@ -27,6 +29,15 @@ import subprocess
 from pathlib import Path
 
 import anthropic
+
+# Load .env from repo root if present
+_env = Path(__file__).parent.parent / ".env"
+if _env.exists():
+    for line in _env.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
 
 
 # ── File-I/O tools for the text-edit agent ──────────────────────────────────
@@ -202,8 +213,9 @@ def run_task_text_edit(task: dict, project_dir: Path, api_key: str,
 
 def run_maven_compile(project_dir: Path) -> dict:
     try:
+        mvn = "mvn.cmd" if sys.platform == "win32" else "mvn"
         result = subprocess.run(
-            ["mvn", "compile", "-q", "--no-transfer-progress"],
+            [mvn, "compile", "-q", "--no-transfer-progress"],
             cwd=project_dir, capture_output=True, text=True, timeout=120,
         )
         if result.returncode == 0:
@@ -215,13 +227,22 @@ def run_maven_compile(project_dir: Path) -> dict:
 
 
 def grep_in_java_sources(project_dir: Path, pattern: str) -> list:
+    """Match pattern in non-comment Java source lines.
+
+    Uses word-boundary matching so 'normalize' does not match 'normalizeInput'.
+    """
     src_dir = project_dir / "src" / "main" / "java"
+    regex = re.compile(r'\b' + re.escape(pattern) + r'\b')
     hits = []
     for java_file in sorted(src_dir.rglob("*.java")):
         try:
             for i, line in enumerate(java_file.read_text(encoding="utf-8").splitlines(), 1):
-                if pattern in line:
-                    hits.append(f"{java_file.name}:{i}: {line.strip()}")
+                stripped = line.strip()
+                # Skip Javadoc and single-line comments
+                if stripped.startswith("*") or stripped.startswith("//"):
+                    continue
+                if regex.search(line):
+                    hits.append(f"{java_file.name}:{i}: {stripped}")
         except Exception:
             pass
     return hits
@@ -364,7 +385,7 @@ def main():
         description="Run TEXT-EDIT baseline agent benchmarks (no IntelliJ/AST)"
     )
     parser.add_argument("--tasks",        default="benchmarks/tasks.json")
-    parser.add_argument("--api-key",      required=True, help="Anthropic API key")
+    parser.add_argument("--api-key",      default=os.environ.get("ANTHROPIC_API_KEY", ""), help="Anthropic API key (defaults to ANTHROPIC_API_KEY env var or .env)")
     parser.add_argument("--model",        default="claude-sonnet-4-6")
     parser.add_argument("--max-turns",    type=int, default=12)
     parser.add_argument("--out",          default="results/text-edit-run.json")
@@ -374,6 +395,10 @@ def main():
         help="Root directory containing benchmark project subdirectories",
     )
     args = parser.parse_args()
+
+    if not args.api_key:
+        print("ERROR: No API key. Set ANTHROPIC_API_KEY, use --api-key, or add it to .env")
+        sys.exit(1)
 
     tasks = json.loads(Path(args.tasks).read_text(encoding="utf-8"))
     if args.task_id:

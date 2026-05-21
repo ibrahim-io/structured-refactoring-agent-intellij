@@ -69,7 +69,7 @@
   },
   {
     "id": "inline-001",
-    "description": "Inline the method com.example.LegacyHelper#normalize: replace every call site with the method body (substituting the parameter) and delete the original method.",
+    "description": "Inline the method com.example.LegacyHelper#normalize everywhere and delete the original. Call sites are in ServiceLayer (param 'raw'), SearchService (param 'query'), ReportGenerator (params 'fieldValue' and 'title'), and DataImporter (param 'entry' in a loop). Each call site uses a different parameter name — InlineMethodProcessor substitutes correctly by construction.",
     "project": "sample-java-project",
     "operations": [
       { "tool": "inline_method", "params": { "qualifiedName": "com.example.LegacyHelper#normalize", "deleteOriginal": true } }
@@ -77,7 +77,7 @@
     "validation": {
       "type": "compile_and_no_reference",
       "deletedSymbol": "normalize",
-      "note": "ServiceLayer.normalizeInput calls normalize — InlineMethodProcessor substitutes the body with correct parameter mapping. A text-edit agent must manually perform parameter substitution, risking correctness errors."
+      "note": "4 files call normalize with different param names. InlineMethodProcessor handles all by construction. A text-edit agent must enumerate all 4 files, then substitute the correct local parameter name at each call site — missing one causes compile failure; using the wrong name produces silent incorrectness."
     }
   },
   {

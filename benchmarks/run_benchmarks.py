@@ -29,6 +29,8 @@ RefactoringMiner (optional):
 """
 
 import json
+import os
+import re
 import sys
 import time
 import argparse
@@ -36,6 +38,15 @@ import subprocess
 import requests
 import anthropic
 from pathlib import Path
+
+# Load .env from repo root if present
+_env = Path(__file__).parent.parent / ".env"
+if _env.exists():
+    for line in _env.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
 
 TOOL_SCHEMA_URL = "http://127.0.0.1:{port}/tools/schema"
 TOOL_CALL_URL   = "http://127.0.0.1:{port}/tools"
@@ -123,8 +134,9 @@ def run_task_with_agent(task: dict, port: int, api_key: str,
 def run_maven_compile(project_dir: Path) -> dict:
     """Compile the project. Returns {"ok": True} or {"ok": False, "error": "..."}."""
     try:
+        mvn = "mvn.cmd" if sys.platform == "win32" else "mvn"
         result = subprocess.run(
-            ["mvn", "compile", "-q", "--no-transfer-progress"],
+            [mvn, "compile", "-q", "--no-transfer-progress"],
             cwd=project_dir,
             capture_output=True,
             text=True,
@@ -139,14 +151,21 @@ def run_maven_compile(project_dir: Path) -> dict:
 
 
 def grep_in_java_sources(project_dir: Path, pattern: str) -> list:
-    """Return matches (file:line: text) where pattern appears in .java source files."""
+    """Return matches (file:line: text) in non-comment .java source lines.
+
+    Uses word-boundary matching so 'normalize' does not match 'normalizeInput'.
+    """
     src_dir = project_dir / "src" / "main" / "java"
+    regex = re.compile(r'\b' + re.escape(pattern) + r'\b')
     hits = []
     for java_file in sorted(src_dir.rglob("*.java")):
         try:
             for i, line in enumerate(java_file.read_text(encoding="utf-8").splitlines(), 1):
-                if pattern in line:
-                    hits.append(f"{java_file.name}:{i}: {line.strip()}")
+                stripped = line.strip()
+                if stripped.startswith("*") or stripped.startswith("//"):
+                    continue
+                if regex.search(line):
+                    hits.append(f"{java_file.name}:{i}: {stripped}")
         except Exception:
             pass
     return hits
@@ -179,6 +198,12 @@ def git_commit_all(project_dir: Path, message: str) -> str:
         cwd=project_dir, capture_output=True, text=True,
     )
     return result.stdout.strip()
+
+
+def git_reset_to_commit(project_dir: Path, sha: str) -> None:
+    """Hard-reset the project back to a specific commit (for task isolation)."""
+    subprocess.run(["git", "reset", "--hard", sha], cwd=project_dir, capture_output=True)
+    subprocess.run(["git", "clean", "-fd"], cwd=project_dir, capture_output=True)
 
 
 def run_refactoring_miner(
@@ -417,7 +442,7 @@ def main():
     )
     parser.add_argument("--tasks",        default="benchmarks/tasks.json")
     parser.add_argument("--agent-port",   type=int, default=6473)
-    parser.add_argument("--api-key",      required=True, help="Anthropic API key")
+    parser.add_argument("--api-key",      default=os.environ.get("ANTHROPIC_API_KEY", ""), help="Anthropic API key (defaults to ANTHROPIC_API_KEY env var or .env)")
     parser.add_argument("--model",        default="claude-sonnet-4-6")
     parser.add_argument("--max-turns",    type=int, default=12)
     parser.add_argument("--out",          default="results/run.json")
@@ -431,6 +456,10 @@ def main():
         help="Path to RefactoringMiner JAR (enables refactoring type classification)",
     )
     args = parser.parse_args()
+
+    if not args.api_key:
+        print("ERROR: No API key. Set ANTHROPIC_API_KEY, use --api-key, or add it to .env")
+        sys.exit(1)
 
     if not check_server(args.agent_port):
         print(f"ERROR: No agent server on port {args.agent_port}.")
@@ -502,6 +531,12 @@ def main():
             "tool_calls": agent_result["tool_calls"],
             "validation": validation,
         })
+
+        # Reset project to pre-task state so each task starts from clean baseline.
+        # IntelliJ detects the file changes via its VFS watcher and reindexes.
+        if project_dir and before_sha:
+            git_reset_to_commit(project_dir, before_sha)
+            time.sleep(2)  # Allow IntelliJ VFS watcher to pick up the revert
 
     print_summary(results)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)

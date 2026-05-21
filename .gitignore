@@ -42,6 +42,14 @@ bin/
 ### Mac OS ###
 .DS_Store
 
+.env
+
 ### Benchmark projects (cloned externally) ###
 benchmarks/projects/spring-petclinic/
 results/
+
+### Generated artifacts ###
+benchmarks/__pycache__/
+benchmarks/projects/sample-java-project/.idea/
+benchmarks/projects/sample-java-project/target/
+.intellijPlatform/
