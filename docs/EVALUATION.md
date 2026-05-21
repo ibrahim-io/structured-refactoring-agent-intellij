@@ -19,309 +19,169 @@
 
 ### 2a. Sample Java Project (`benchmarks/projects/sample-java-project/`)
 
-A minimal 4-class Maven project (Java 17) committed alongside the plugin. Every task in `benchmarks/tasks.json` targets this project at a fixed state — there are no external dependencies and no setup required beyond opening it in the sandbox IDE.
+A Maven project (Java 17) with seven classes, designed to expose structural advantages of AST-aware refactoring over text-edit approaches. Every task in `benchmarks/tasks.json` targets this project.
 
-Classes:
 | Class | Qualified name | Role |
 |---|---|---|
 | `User.java` | `com.example.User` | Has poorly-named field `usrNm`; rename + add-method targets |
-| `LegacyHelper.java` | `com.example.LegacyHelper` | Has unused method `parseOldFormat`; safe-delete target |
+| `LegacyHelper.java` | `com.example.LegacyHelper` | Has unused method `parseOldFormat` (safe-delete) and `parseNewFormat` (cross-file rename target) |
 | `Notifier.java` | `com.example.Notifier` | Has method `send(String)`; change-signature target |
 | `utils/DateHelper.java` | `com.example.utils.DateHelper` | move-class target |
+| `OrderProcessor.java` | `com.example.OrderProcessor` | **Cross-file dependency**: imports `com.example.utils.DateHelper`. After move-001, the structured agent's `MoveClassesOrPackagesProcessor` updates this import automatically. A text-edit agent leaves it stale → compile failure. |
+| `NotificationController.java` | `com.example.NotificationController` | **Cross-file caller**: calls `notifier.send(message)` with one argument. After change-sig-001 adds `int priority`, `ChangeSignatureProcessor` updates this call to `send(message, 0)`. A text-edit agent edits `Notifier.java` but leaves this call broken → compile failure. |
+| `ServiceLayer.java` | `com.example.ServiceLayer` | **Cross-file caller**: calls `LegacyHelper.parseNewFormat(raw)`. After rename-method-002, the structured agent's `ReferencesSearch` finds and renames this call site. A text-edit agent that edits only `LegacyHelper.java` leaves this call broken → compile failure. |
 
 ### 2b. spring-petclinic (`benchmarks/tasks_petclinic.json`)
 
 A real-world Spring Boot application cloned at tag `3.3.0` via `benchmarks/setup.py --petclinic`. Used to validate that the agent can navigate unfamiliar, medium-sized codebases (~30 classes, Spring annotations, layered architecture).
 
-Tasks cover:
-- Rename attribute (`Owner.telephone` → `phoneNumber`)
-- Add method (`Owner.getFullName()`)
-- find_usages inspection (`Pet`)
-- read_file inspection (reading `Owner` source)
-- Rename class (`CrashController` → `PanicController`)
-
-### 2c. Setup Script
-
-```bash
-python benchmarks/setup.py          # verifies sample-java-project
-python benchmarks/setup.py --petclinic  # also clones spring-petclinic 3.3.0
-```
+Tasks cover: rename attribute, add method, find_usages inspection, read_file inspection, rename class.
 
 ---
 
 ## 3. Benchmark Tasks (`benchmarks/tasks.json`)
 
-Each task is a JSON object with:
-- `id` — unique identifier
-- `description` — natural-language instruction given to the agent
-- `project` — target project (checked-out at a specific git commit)
-- `operations` — expected sequence of tool calls
-- `validation` — how to verify correctness (compile, test, RefactoringMiner, git-diff shape)
+Seven tasks spanning six refactoring operation types:
 
-Example:
+| Task ID | Operation | Cross-file effect |
+|---|---|---|
+| `rename-001` | Rename field `User.usrNm` → `username` | Within single file (field is `private`) |
+| `rename-method-002` | Rename method `LegacyHelper.parseNewFormat` → `parseInput` | **Cross-file**: `ServiceLayer.java` calls the old name |
+| `move-001` | Move `com.example.utils.DateHelper` → `com.example.common` | **Cross-file**: `OrderProcessor.java` imports old package |
+| `safe-delete-001` | Delete unused method `LegacyHelper.parseOldFormat` | Symbol removed from codebase |
+| `create-class-001` | Create interface `com.example.payments.PaymentGateway` | New file on disk |
+| `add-method-001` | Add `User.getDisplayName()` | Symbol added to existing class |
+| `change-sig-001` | Add `int priority` to `Notifier.send` signature | **Cross-file**: `NotificationController.java` calls old signature |
 
-```json
-[
-  {
-    "id": "rename-001",
-    "description": "Rename the field 'usrNm' in class com.example.User to 'username'.",
-    "project": "sample-java-project",
-    "operations": [
-      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "com.example.User#usrNm" } },
-      { "tool": "rename_symbol",       "params": { "qualifiedName": "com.example.User#usrNm", "newName": "username" } }
-    ],
-    "validation": { "type": "compile_and_refactoringminer", "expectedRefactoringType": "Rename Attribute" }
-  },
-  {
-    "id": "extract-001",
-    "description": "Extract the selected block in UserService.processRequest() into a new method called 'validateInput'.",
-    "project": "sample-java-project",
-    "operations": [
-      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "com.example.UserService#processRequest" } }
-    ],
-    "validation": { "type": "compile_and_refactoringminer", "expectedRefactoringType": "Extract Method" }
-  },
-  {
-    "id": "move-001",
-    "description": "Move class com.example.utils.DateHelper to package com.example.common.",
-    "project": "sample-java-project",
-    "operations": [
-      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "com.example.utils.DateHelper" } },
-      { "tool": "move_class", "params": { "qualifiedClassName": "com.example.utils.DateHelper", "targetPackage": "com.example.common" } }
-    ],
-    "validation": { "type": "compile_and_refactoringminer", "expectedRefactoringType": "Move Class" }
-  },
-  {
-    "id": "safe-delete-001",
-    "description": "Safe-delete the unused method com.example.LegacyHelper#parseOldFormat.",
-    "project": "sample-java-project",
-    "operations": [
-      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "com.example.LegacyHelper#parseOldFormat" } },
-      { "tool": "safe_delete", "params": { "qualifiedName": "com.example.LegacyHelper#parseOldFormat" } }
-    ],
-    "validation": { "type": "compile_and_no_reference" }
-  },
-  {
-    "id": "create-001",
-    "description": "Create a new interface PaymentGateway in package com.example.payments with a single method 'charge(double amount): boolean'.",
-    "project": "sample-java-project",
-    "operations": [
-      { "tool": "create_java_file", "params": {
-        "packageName": "com.example.payments",
-        "fileName": "PaymentGateway.java",
-        "content": "package com.example.payments;\npublic interface PaymentGateway { boolean charge(double amount); }"
-      }}
-    ],
-    "validation": { "type": "compile_and_file_exists", "expectedFile": "com/example/payments/PaymentGateway.java" }
-  },
-  {
-    "id": "change-sig-001",
-    "description": "Change the signature of com.example.Notifier#send to add a second parameter 'priority: int' with default value 0.",
-    "project": "sample-java-project",
-    "operations": [
-      { "tool": "change_signature", "params": {
-        "qualifiedName": "com.example.Notifier#send",
-        "parameterChanges": [
-          { "name": "message", "type": "String", "oldIndex": "0" },
-          { "name": "priority", "type": "int", "oldIndex": "-1", "defaultValue": "0" }
-        ]
-      }}
-    ],
-    "validation": { "type": "compile_and_refactoringminer", "expectedRefactoringType": "Add Parameter" }
-  }
-]
+The three tasks with "Cross-file effect" are the **key differentiators**: the structured agent handles them correctly via the IntelliJ refactoring APIs; the text-edit baseline is expected to produce compilation failures.
+
+---
+
+## 4. Multi-Layer Validation (`run_benchmarks.py`)
+
+Each task now validates at four layers:
+
+### Layer 1: Tool-call layer
+- All mutating tools (`rename_symbol`, `move_class`, etc.) returned `ok: true`
+- All expected tools were invoked
+
+### Layer 2: Compile layer
+- `mvn compile` succeeds after the refactoring
+- **This is the primary correctness signal**: a text-edit agent that misses cross-file references causes compilation failures here
+
+### Layer 3: Disk-content layer
+Depending on `validation.type`:
+| Type | Check |
+|---|---|
+| `compile_and_file_exists` | Expected file exists on disk |
+| `compile_and_no_reference` | `deletedSymbol` absent from all `.java` files |
+| `compile_and_symbol_exists` | `expectedSymbol` present in `.java` files |
+| `compile_and_symbol_exists` + `crossFileCheck` | Old symbol name absent from ALL files (catches cross-file miss) |
+
+### Layer 4: RefactoringMiner layer (optional)
+Runs [RefactoringMiner](https://github.com/tsantalis/RefactoringMiner) between two git commits to classify the refactoring type (e.g., "Rename Attribute", "Move Class", "Add Parameter"). Requires `--rm-jar` argument.
+
+This provides independent academic classification of the operation — RefactoringMiner is a peer-reviewed tool, making its output publishable evidence.
+
+### Running the benchmark
+```powershell
+# Reset project to baseline first
+. benchmarks/reset_sample_project.ps1
+
+# Run structured agent (requires IntelliJ + plugin running)
+python benchmarks/run_benchmarks.py `
+    --tasks benchmarks/tasks.json `
+    --api-key $env:ANTHROPIC_API_KEY `
+    --projects-dir benchmarks/projects `
+    --rm-jar tools/RefactoringMiner.jar `
+    --out results/structured-$(Get-Date -f yyyyMMdd-HHmmss).json
 ```
 
 ---
 
-## 4. Benchmark Runner (`benchmarks/run_benchmarks.py`)
+## 5. Text-Edit Baseline Agent (`run_benchmarks_text_edit.py`)
 
-```python
-#!/usr/bin/env python3
-"""
-Benchmark runner for the structured-refactoring-agent.
+A second benchmark runner that drives Claude using **only raw file I/O**:
 
-Usage:
-  python benchmarks/run_benchmarks.py \
-    --tasks benchmarks/tasks.json \
-    --agent-port 6473 \
-    --api-key $ANTHROPIC_API_KEY \
-    --out results/run-$(date +%Y%m%d-%H%M%S).json
+| Tool | Description |
+|---|---|
+| `list_java_files` | List all `.java` files under the project |
+| `read_file` | Read file contents as plain text |
+| `write_file` | Overwrite a file with new content |
+| `create_file` | Create a new file |
+| `delete_file` | Delete a file |
 
-Requirements:
-  pip install anthropic requests
-"""
+No IntelliJ. No AST. No reference index. The agent sees the same task descriptions and must figure out which files to edit by reading their text content.
 
-import json
-import sys
-import time
-import argparse
-import requests
-import anthropic
-from pathlib import Path
+This is the **apples-to-apples comparison** for RQ1. Both agents are driven by the same `claude-sonnet-4-6` model on the same tasks. The only difference is the tool API they have access to.
 
-TOOL_SCHEMA_URL = "http://127.0.0.1:{port}/tools/schema"
-TOOL_CALL_URL   = "http://127.0.0.1:{port}/tools"
-STATUS_URL      = "http://127.0.0.1:{port}/status"
+```powershell
+# Text-edit agent runs standalone (no IntelliJ needed)
+# Reset project first (the text-edit agent modifies disk directly)
+. benchmarks/reset_sample_project.ps1
 
-
-def check_server(port: int) -> bool:
-    try:
-        r = requests.get(STATUS_URL.format(port=port), timeout=5)
-        return r.status_code == 200
-    except Exception:
-        return False
-
-
-def call_tool(port: int, tool_name: str, params: dict) -> dict:
-    r = requests.post(
-        TOOL_CALL_URL.format(port=port),
-        json={"tool": tool_name, "params": params},
-        timeout=30,
-    )
-    return r.json()
-
-
-def run_task_with_agent(task: dict, port: int, api_key: str) -> dict:
-    """Drive the agent with a natural-language instruction and collect tool calls."""
-    schema_r = requests.get(TOOL_SCHEMA_URL.format(port=port), timeout=5)
-    tools = schema_r.json()
-
-    client = anthropic.Anthropic(api_key=api_key)
-    messages = [{"role": "user", "content": task["description"]}]
-    tool_calls_made = []
-    turns = 0
-    max_turns = 10
-
-    while turns < max_turns:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2048,
-            tools=tools,
-            messages=messages,
-        )
-        turns += 1
-
-        tool_results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                result = call_tool(port, block.name, block.input)
-                tool_calls_made.append({"tool": block.name, "params": block.input, "result": result})
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": json.dumps(result),
-                })
-
-        messages.append({"role": "assistant", "content": response.content})
-
-        if response.stop_reason != "tool_use" or not tool_results:
-            break
-        messages.append({"role": "user", "content": tool_results})
-
-    return {"tool_calls": tool_calls_made, "turns": turns}
-
-
-def validate(task: dict, agent_result: dict) -> dict:
-    validation = task.get("validation", {})
-    vtype = validation.get("type", "")
-    passed = True
-    notes = []
-
-    # Check expected tool sequence was followed (soft check)
-    expected_ops = task.get("operations", [])
-    actual_tools = [c["tool"] for c in agent_result["tool_calls"]]
-    expected_tools = [op["tool"] for op in expected_ops]
-    if set(expected_tools) <= set(actual_tools):
-        notes.append(f"Expected tools {expected_tools} all called.")
-    else:
-        missing = set(expected_tools) - set(actual_tools)
-        notes.append(f"Missing expected tools: {missing}")
-        passed = False
-
-    # Check all tool calls returned ok=true
-    failed_calls = [c for c in agent_result["tool_calls"] if not c["result"].get("ok", False)]
-    if failed_calls:
-        passed = False
-        for fc in failed_calls:
-            notes.append(f"Tool {fc['tool']} returned error: {fc['result'].get('error', '?')}")
-
-    return {"passed": passed, "notes": notes, "validation_type": vtype}
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--tasks",     required=True)
-    parser.add_argument("--agent-port", type=int, default=6473)
-    parser.add_argument("--api-key",   required=True)
-    parser.add_argument("--out",       default="results/run.json")
-    args = parser.parse_args()
-
-    if not check_server(args.agent_port):
-        print(f"ERROR: Agent server not running on port {args.agent_port}. Start IntelliJ with the plugin first.")
-        sys.exit(1)
-
-    tasks = json.loads(Path(args.tasks).read_text())
-    results = []
-
-    for task in tasks:
-        print(f"Running task {task['id']}: {task['description'][:60]}...")
-        t0 = time.time()
-        try:
-            agent_result = run_task_with_agent(task, args.agent_port, args.api_key)
-            validation = validate(task, agent_result)
-            status = "PASS" if validation["passed"] else "FAIL"
-        except Exception as e:
-            agent_result = {"tool_calls": [], "turns": 0}
-            validation = {"passed": False, "notes": [str(e)], "validation_type": "error"}
-            status = "ERROR"
-        elapsed = time.time() - t0
-        print(f"  {status} in {elapsed:.1f}s ({agent_result['turns']} turns)")
-        results.append({
-            "id": task["id"],
-            "description": task["description"],
-            "status": status,
-            "elapsed_s": round(elapsed, 2),
-            "turns": agent_result["turns"],
-            "tool_calls": agent_result["tool_calls"],
-            "validation": validation,
-        })
-
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(json.dumps({"tasks": results}, indent=2))
-
-    passed = sum(1 for r in results if r["status"] == "PASS")
-    print(f"\nResults: {passed}/{len(results)} passed. Written to {args.out}")
-
-
-if __name__ == "__main__":
-    main()
+python benchmarks/run_benchmarks_text_edit.py `
+    --tasks benchmarks/tasks.json `
+    --api-key $env:ANTHROPIC_API_KEY `
+    --projects-dir benchmarks/projects `
+    --out results/text-edit-$(Get-Date -f yyyyMMdd-HHmmss).json
 ```
 
 ---
 
-## 4. Metrics
+## 6. Comparison (`compare_results.py`)
+
+```powershell
+python benchmarks/compare_results.py results/structured-run.json results/text-edit-run.json
+```
+
+Outputs a side-by-side table:
+```
+====================================================================
+Task ID              Structured    Text-Edit    Advantage
+====================================================================
+  rename-001              PASS          PASS
+  rename-method-002       PASS          FAIL     <-- structured wins
+  move-001                PASS          FAIL     <-- structured wins
+  safe-delete-001         PASS          PASS
+  create-class-001        PASS          PASS
+  add-method-001          PASS          PASS
+  change-sig-001          PASS          FAIL     <-- structured wins
+====================================================================
+  TOTAL                   7/7           4/7
+====================================================================
+```
+
+Expected hypothesis: structured agent wins on all three cross-file tasks (`rename-method-002`, `move-001`, `change-sig-001`). Text-edit agent succeeds only on single-file operations.
+
+---
+
+## 7. Metrics
 
 | Metric | How measured |
 |---|---|
 | **Correctness** | `ok: true` from tool call + project compiles after operation |
-| **RefactoringMiner match** | Run RefactoringMiner on git diff; check expected refactoring type detected |
+| **Cross-file correctness** | Old symbol absent from all files after rename/move |
+| **RefactoringMiner match** | Run RefactoringMiner on git diff; check expected type detected |
 | **Task completion rate** | % of benchmark tasks where all expected tools were called and all returned `ok: true` |
-| **Symbol resolution accuracy** | % of `find_symbol_by_name` calls that resolved to the correct element (non-null) |
+| **Compile pass rate** | % of tasks where project compiles after agent's changes |
 | **Turns to completion** | Number of API round-trips per task |
-| **Baseline comparison** | Repeat same tasks with SWE-agent (text diffs) and measure compile rate |
+| **Cross-file advantage** | Pass rate delta between structured and text-edit agents on cross-file tasks |
 
 ---
 
-## 5. Baseline
+## 8. Expected Results (Hypothesis)
 
-For RQ1, the text-substitution baseline uses a vanilla agent that applies refactorings by generating code text and overwriting files. The comparison metric is whether the project compiles after the operation and whether all original usages were updated.
+| Agent | Same-file tasks | Cross-file tasks | Overall |
+|---|---|---|---|
+| Structured (IntelliJ AST) | 7/7 (100%) | 3/3 (100%) | **7/7** |
+| Text-edit (raw file I/O) | 4/4 (100%) | ~0/3 (0%) | **~4/7** |
 
-Expected outcome: structured-refactoring-agent achieves ~100% compilation rate and full usage update; text-substitution baseline will have partial failures on cross-file renames and parameter reordering.
+The structural advantage manifests specifically and exclusively on cross-file refactorings. This is the core empirical claim of the thesis: **IntelliJ's refactoring APIs encode program semantics that text-edit approaches do not have access to.**
 
 ---
 
-## 6. Developer Study (RQ4)
+## 9. Developer Study (RQ4, Future Work)
 
 **Participants:** 10–15 final-year CS/EE students or junior developers.
 
@@ -337,11 +197,3 @@ Expected outcome: structured-refactoring-agent achieves ~100% compilation rate a
 - Number of errors requiring undo
 - Post-task NASA-TLX cognitive load questionnaire
 - Semi-structured interview: "Did you trust the change was correct without checking?"
-
----
-
-## 7. Expected Contributions from Evaluation
-
-1. Empirical confirmation that AST-safe execution eliminates compilation failures for scope-preserving refactorings (rename, move, change-signature).
-2. Evidence that `find_symbol_by_name` + qualified-name resolution reduces agent error rate on symbol lookup vs. offset-based approaches.
-3. Comparison data positioning the structured-refactoring-agent vs. SWE-agent (text patches) on real-world Java refactorings.
