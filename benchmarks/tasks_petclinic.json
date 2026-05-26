@@ -75,7 +75,8 @@
     "validation": {
       "type": "compile_and_symbol_exists",
       "expectedSymbol": "org.springframework.samples.petclinic.owner.Owner#recordVisit",
-      "crossFileCheck": true
+      "survivingSymbol": "org.springframework.samples.petclinic.owner.Pet#addVisit",
+      "note": "crossFileCheck omitted: Pet.addVisit shares the name and would cause a false positive; compile already validates that VisitController callers were updated. survivingSymbol checks Pet.addVisit was NOT renamed."
     }
   },
   {

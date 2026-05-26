@@ -144,22 +144,28 @@ python benchmarks/compare_results.py `
 | `pc-find-usages-001` (Pet usages) | PASS | PASS | PASS (grep) | Index vs grep precision |
 | `pc-read-file-001` (read Owner) | PASS | PASS | PASS | Basic inspection |
 | `pc-rename-002` (class+file rename) | PASS | PASS | PASS | Both rename file correctly |
-| `pc-rename-method-001` (addVisit→recordVisit) | PASS | PASS | PASS | Both update cross-file callers |
+| `pc-rename-method-001` (addVisit→recordVisit) | PASS | PASS | **FAIL** | Cross-class name collision: Pet.addVisit renamed too |
 | `pc-move-001` (PetValidator→system) | PASS | PASS | **FAIL** | Implicit same-package deps |
 | `pc-rename-method-002` (getPet overload) | PASS | PASS | **FAIL** | Overload-specific rename |
 | `pc-change-sig-001` (addPet +param) | PASS | PASS | PASS | Both update call sites |
 
-**Predicted: Structured 9/9, Text-edit 7/9**
+**Predicted: Structured 9/9, Text-edit 6/9**
 
-The two text-edit failures expose fundamental limitations of text editing:
+The three text-edit failures expose fundamental limitations of text editing:
 
-1. **pc-move-001**: `PetValidator` references `Pet` from the same `owner` package,
+1. **pc-rename-method-001**: `Pet.addVisit(Visit)` shares the name `addVisit`
+   with `Owner.addVisit(Integer, Visit)`. Text replacement renames all occurrences
+   of the word `addVisit`, incorrectly renaming `Pet.addVisit` too. IntelliJ's
+   `RenameProcessor` uses the PSI reference graph to distinguish calls to
+   `owner.addVisit(...)` from calls to `pet.addVisit(...)`.
+
+2. **pc-move-001**: `PetValidator` references `Pet` from the same `owner` package,
    and `PetController` uses `PetValidator` also from the same package. After moving
    `PetValidator` to `system`, both callers need new import statements. Text editing
    can only update *explicit* imports; IntelliJ's `MoveClassesOrPackagesProcessor`
    resolves the full reference graph including implicit same-package dependencies.
 
-2. **pc-rename-method-002**: Asks to rename only the two-parameter overload
+3. **pc-rename-method-002**: Asks to rename only the two-parameter overload
    `getPet(String, boolean)`. Text replacement is name-only: it renames all three
    `getPet` overloads (`(String)`, `(Integer)`, `(String, boolean)`) to `findPet`.
    IntelliJ's `RenameProcessor` resolves the specific PSI method node for that
@@ -182,13 +188,14 @@ python benchmarks/run_petclinic_direct.py `
     --out results/structured-petclinic-direct-5.json
 ```
 
-### Scripted text-edit direct (last full run: `results/text-edit-petclinic-direct-4.json`)
+### Scripted text-edit direct (last full run: `results/text-edit-petclinic-direct-6.json`)
 
-Canonical 9-task result: **7/9**
+Canonical 9-task result: **6/9**
 
-- PASS (7): pc-rename-001, pc-add-method-001, pc-find-usages-001,
-  pc-read-file-001, pc-rename-002, pc-rename-method-001, pc-change-sig-001
-- FAIL (2): pc-move-001 (implicit same-package deps), pc-rename-method-002
+- PASS (6): pc-rename-001, pc-add-method-001, pc-find-usages-001,
+  pc-read-file-001, pc-rename-002, pc-change-sig-001
+- FAIL (3): pc-rename-method-001 (cross-class name collision — Pet.addVisit renamed
+  too), pc-move-001 (implicit same-package deps), pc-rename-method-002
   (overload collision — all getPet variants renamed to findPet)
 
 Comparison command:
@@ -196,12 +203,12 @@ Comparison command:
 ```powershell
 python benchmarks/compare_results.py `
     results/structured-petclinic-direct-5.json `
-    results/text-edit-petclinic-direct-4.json
+    results/text-edit-petclinic-direct-6.json
 ```
 
 ## After The Run
 
-If results are roughly as expected (9/9 vs 7/9), the next step is the full LLM
+If results are roughly as expected (9/9 vs 6/9), the next step is the full LLM
 agent comparison (Option A vs Option C) to measure how the structural advantage
 manifests in agent-generated refactoring decisions.
 

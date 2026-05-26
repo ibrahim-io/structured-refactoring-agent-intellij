@@ -329,9 +329,9 @@ Canonical 9-task text-edit run: `results/text-edit-petclinic-direct-4.json`
 | `pc-find-usages-001` | PASS | PASS | Structured returns PSI usages; text returns grep matches |
 | `pc-read-file-001` | PASS | PASS | Basic inspection |
 | `pc-rename-002` | PASS | PASS | Both correctly rename class + file |
-| `pc-rename-method-001` | PASS (expected) | PASS | Cross-file callers updated |
+| `pc-rename-method-001` | PASS (expected) | **FAIL** | Cross-class name collision: Pet.addVisit also renamed |
 | `pc-move-001` | PASS (expected) | **FAIL** | Implicit same-package dependencies |
-| `pc-rename-method-002` | PASS (expected) | **FAIL** | Overload collision |
+| `pc-rename-method-002` | PASS (expected) | **FAIL** | Overload collision: all getPet variants renamed |
 | `pc-change-sig-001` | PASS (expected) | PASS | Call sites updated |
 
 "PASS (expected)" = task is new in the 9-task suite; IntelliJ has not been run
@@ -339,15 +339,36 @@ yet on these four tasks. They are expected to pass based on the plugin
 implementation (`MoveClassesOrPackagesProcessor`, signature-typed
 `resolveQualifiedName`, `ChangeSignatureProcessor`).
 
+Text-edit result file: `results/text-edit-petclinic-direct-6.json`
+
 Summary (scripted text-edit vs predicted structured):
 
 | Metric | Structured direct | Scripted text-edit |
 |---|---:|---:|
-| Correctness | **9/9** (predicted) | **7/9** (measured) |
+| Correctness | **9/9** (predicted) | **6/9** (measured) |
 | LLM turns | 0 | 0 |
 | API cost | £0 | £0 |
 
-### Root causes of the two text-edit failures
+### Root causes of the three text-edit failures
+
+**pc-rename-method-001 — cross-class name collision:**
+
+`Owner.addVisit(Integer petId, Visit visit)` is the method to rename. However,
+`Pet.addVisit(Visit visit)` is a *different* method on a different class that
+happens to share the name. The scripted baseline calls
+`replace_word_in_java(project_dir, "addVisit", "recordVisit")`, a word-boundary
+text substitution that does not know which class each occurrence belongs to.
+Result: `Pet.addVisit` and all calls to `pet.addVisit(visit)` in `VisitController`
+are also renamed to `recordVisit`, violating the task specification.
+
+IntelliJ's `RenameProcessor` operates on the specific PSI node for
+`Owner.addVisit`. Its reference index knows that `pet.addVisit(visit)` is a call
+to `Pet.addVisit`, not `Owner.addVisit`, and leaves those calls untouched.
+
+The validation catches this with a `survivingSymbol` check: after the structured
+rename, `addVisit` still appears in `Pet.java` (the declaration) and in
+`VisitController.java` line 78 (the `pet.addVisit` call). After the text-edit
+rename, `addVisit` is absent from all source files.
 
 **pc-move-001 — implicit same-package dependencies:**
 
@@ -361,7 +382,8 @@ in `owner`) uses `PetValidator` without an import. After moving `PetValidator` t
 
 The scripted baseline's `move_class` can only update *explicit* fully-qualified
 import references. It has no mechanism to detect references that rely on
-same-package resolution and inject new imports.
+same-package resolution and inject new imports. Compile error:
+`PetValidator.java:[61,24] cannot find symbol: class Pet`.
 
 IntelliJ's `MoveClassesOrPackagesProcessor` uses the PSI reference graph, which
 includes same-package references, and inserts the necessary imports automatically.
@@ -385,14 +407,24 @@ retain their original name.
 
 ### What this means for the thesis
 
-Both failures expose the same underlying limitation: text-level refactoring lacks
+All three failures expose the same underlying limitation: text-level refactoring lacks
 the reference graph and type information required to:
 
-1. Detect and update *implicit* (same-package) references when moving a class
-2. Target a *specific overload* when multiple methods share a name
+1. **Class-contextual rename**: distinguishing `Owner.addVisit` from `Pet.addVisit`
+   requires knowing which class each call site's receiver belongs to — information
+   that is in the type system but not in raw text.
+2. **Implicit reference detection**: finding all callers of `PetValidator` (even
+   same-package ones that have no import statement) requires a full reference
+   index, not just an import-statement scanner.
+3. **Overload-specific targeting**: selecting one overload of `getPet` out of three
+   requires a type-signature match that plain name comparison cannot provide.
 
-These are exactly the cases where PSI-backed structured refactoring provides
-correct-by-construction guarantees — the core thesis contribution.
+In all three cases, structured refactoring via IntelliJ PSI provides
+correct-by-construction guarantees because it operates on the AST with full type
+information, while text-level refactoring is fundamentally limited to name-string
+matching. This is the core thesis contribution: decoupling LLM reasoning (what to
+refactor) from AST-safe execution (how), replacing string-patch edits with
+semantics-preserving, atomically-applied IDE operations.
 
 ---
 

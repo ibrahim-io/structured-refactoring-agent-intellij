@@ -89,6 +89,11 @@ text patch.
 - [x] Expand petclinic task suite from 5 → 9 tasks with harder cross-file cases.
 - [x] Add CSV export to compare_results.py (`--csv out.csv`).
 - [x] Build MCP bridge (`benchmarks/mcp_bridge.py`) for model-agnostic structured access.
+- [x] Fix text-edit baseline bugs: class rename name extraction; change_signature new param detection.
+- [x] Add survivingSymbol validation to overload-rename task (catches overload collision).
+- [x] Fix Maven compile error display (filter [ERROR] lines; no longer obscured by JVM warnings).
+- [x] Full 9-task text-edit no-API baseline run: 7/9 (failures: pc-move-001, pc-rename-method-002).
+- [x] Document root causes of both text-edit failures in EVALUATION.md.
 - [ ] Run direct structured suite on the 4 new petclinic tasks (requires IntelliJ on spring-petclinic).
 - [ ] Run full API petclinic suite (structured + text-edit) with OpenAI or Anthropic credits.
 - [ ] Connect Gemini CLI or Codex to MCP bridge and run petclinic tasks manually.

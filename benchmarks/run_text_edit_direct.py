@@ -460,7 +460,7 @@ def validate(task: dict, result: dict, project_dir: Path) -> dict:
                     notes.append(f"Surviving symbol '{surviving_name}' still present (good): {surviving_hits[0]}")
                 else:
                     passed = False
-                    notes.append(f"Surviving symbol '{surviving_name}' was incorrectly renamed (overload collision)")
+                    notes.append(f"Surviving symbol '{surviving_name}' was incorrectly renamed (name collision across classes/overloads)")
 
         elif vtype == "compile_and_refactoringminer":
             notes.append("RefactoringMiner: N/A for direct text-edit baseline")
