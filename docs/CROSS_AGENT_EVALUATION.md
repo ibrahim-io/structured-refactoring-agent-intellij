@@ -17,9 +17,68 @@ IntelliJ tools.
 | Scripted text-edit direct | `benchmarks/run_text_edit_direct.py` | No | Lower-bound raw text baseline |
 | Claude structured | `benchmarks/run_benchmarks.py` | Yes | Tests LLM planning with structured tools |
 | Claude text-edit | `benchmarks/run_benchmarks_text_edit.py` | Yes | Tests LLM planning with raw file tools |
-| Codex text-edit | Codex CLI / app manually | Usually subscription quota | Tests another agent's text-edit behavior |
-| Gemini text-edit | Gemini CLI / Code Assist manually | Free/subscription quota where available | Tests another agent's text-edit behavior |
-| Copilot text-edit | Copilot Chat / agent mode manually | Plan quota / premium requests | Tests IDE-native text-edit behavior |
+| OpenAI structured | `run_benchmarks.py --provider openai` | Yes | Same structured tools, different model |
+| OpenAI text-edit | `run_benchmarks_text_edit.py --provider openai` | Yes | Same text-edit tools, different model |
+| Gemini / Codex / Copilot via MCP | `benchmarks/mcp_bridge.py` | Subscription quota | Any MCP client calls the structured backend |
+| Copilot / other text-edit | Manual | Plan quota | Tests IDE-native text-edit behavior |
+
+## MCP Bridge (model-agnostic structured access)
+
+`benchmarks/mcp_bridge.py` exposes the IntelliJ plugin's HTTP tool API as an
+MCP server over stdio transport. Any MCP-compatible agent can call the same
+structured refactoring tools without any changes to the plugin or the agent's
+own architecture.
+
+### Setup
+
+```powershell
+pip install mcp requests
+```
+
+### Connect Claude Desktop
+
+Add to `%APPDATA%\Claude\claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "refactoring": {
+      "command": "python",
+      "args": ["C:/path/to/benchmarks/mcp_bridge.py", "--port", "6473"]
+    }
+  }
+}
+```
+
+### Connect Gemini CLI
+
+Add to `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "refactoring": {
+      "command": "python",
+      "args": ["path/to/benchmarks/mcp_bridge.py"]
+    }
+  }
+}
+```
+
+### What it exposes
+
+The bridge fetches the tool schema live from `/tools/schema` each time a client
+requests the tool list, so it automatically reflects any new tools added to the
+plugin. It also adds a `get_project_status` tool (not in the plugin HTTP schema)
+that returns the currently open project name — useful as a first call to confirm
+the right project is loaded.
+
+### Thesis significance
+
+The MCP bridge is the concrete implementation of the paper's core architectural
+claim: the structured refactoring backend is **model-agnostic**. Any agent that
+speaks MCP can call it. The LLM (Claude, Gemini, Codex, GPT-4o) is a planning
+layer; the IntelliJ PSI is the execution layer. These are decoupled.
 
 ## Zero-Cost First Policy
 

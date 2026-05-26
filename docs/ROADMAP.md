@@ -54,7 +54,7 @@ text patch.
 - [x] Document how to run Gemini CLI / Gemini Code Assist against the same task set.
 - [x] Record whether each agent used subscription quota, free tier, or paid API.
 - [ ] Compare structured direct vs Codex text-edit vs Gemini text-edit vs Claude text-edit.
-- [ ] If feasible, expose the IntelliJ tool API as an MCP server so non-Claude agents can call the same structured tools.
+- [x] Expose the IntelliJ tool API as an MCP server (`benchmarks/mcp_bridge.py`) so non-Claude agents (Gemini CLI, Codex, Copilot) can call the same structured tools via stdio MCP transport.
 
 ## 5. Thesis Evidence
 
@@ -88,6 +88,8 @@ text patch.
 - [x] Add OpenAI provider support to both benchmark runners (`--provider openai`).
 - [x] Expand petclinic task suite from 5 → 9 tasks with harder cross-file cases.
 - [x] Add CSV export to compare_results.py (`--csv out.csv`).
+- [x] Build MCP bridge (`benchmarks/mcp_bridge.py`) for model-agnostic structured access.
 - [ ] Run direct structured suite on the 4 new petclinic tasks (requires IntelliJ on spring-petclinic).
 - [ ] Run full API petclinic suite (structured + text-edit) with OpenAI or Anthropic credits.
+- [ ] Connect Gemini CLI or Codex to MCP bridge and run petclinic tasks manually.
 - [ ] Document API petclinic results in EVALUATION.md.
