@@ -103,7 +103,9 @@
     ],
     "validation": {
       "type": "compile_and_symbol_exists",
-      "expectedSymbol": "org.springframework.samples.petclinic.owner.Owner#findPet"
+      "expectedSymbol": "org.springframework.samples.petclinic.owner.Owner#findPet",
+      "survivingSymbol": "org.springframework.samples.petclinic.owner.Owner#getPet",
+      "note": "survivingSymbol checks that getPet(String) and getPet(Integer) overloads were NOT renamed"
     }
   },
   {

@@ -298,43 +298,101 @@ it cannot enumerate within the context window).
 
 ---
 
-## 7b. Actual Results (spring-petclinic, No-API Direct)
+## 7b. Actual Results (spring-petclinic, No-API Direct, 9-task suite)
 
-Source files:
+This section covers two separate direct runs — no LLM calls in either.
 
-- Structured: `results/structured-petclinic-direct-4.json`
-- Scripted text-edit: `results/text-edit-petclinic-direct-1.json`
+### Structured IntelliJ direct (IntelliJ required)
 
-This run used **zero LLM/API calls**. It compares the structured IntelliJ tool
-layer directly against a deterministic regex/string-edit baseline.
+Structured results are currently available for **5/9 tasks** (the original 5
+before the suite was expanded). Source: `results/structured-petclinic-direct-4.json`.
+Run the full 9-task suite with:
+
+```powershell
+$env:BENCHMARK_PROJECT = "spring-petclinic"
+.\gradlew.bat runIde
+# wait for indexing, then:
+python benchmarks/run_petclinic_direct.py `
+    --tasks benchmarks/tasks_petclinic.json `
+    --projects-dir benchmarks/projects `
+    --out results/structured-petclinic-direct-5.json
+```
+
+### Scripted text-edit direct (standalone, no IntelliJ)
+
+Canonical 9-task text-edit run: `results/text-edit-petclinic-direct-4.json`
 
 | Task ID | Structured direct | Scripted text-edit | Note |
 |---|---|---|---|
 | `pc-rename-001` | PASS | PASS | Field rename compiles in both modes |
 | `pc-add-method-001` | PASS | PASS | Method insertion compiles in both modes |
-| `pc-find-usages-001` | PASS | PASS | Structured returns PSI/index-backed usages; text baseline returns grep matches |
-| `pc-read-file-001` | PASS | PASS | Basic file inspection |
-| `pc-rename-002` | **PASS** | **FAIL** | Structured class rename succeeds; scripted text replacement fails to perform the class/file rename |
+| `pc-find-usages-001` | PASS | PASS | Structured returns PSI usages; text returns grep matches |
+| `pc-read-file-001` | PASS | PASS | Basic inspection |
+| `pc-rename-002` | PASS | PASS | Both correctly rename class + file |
+| `pc-rename-method-001` | PASS (expected) | PASS | Cross-file callers updated |
+| `pc-move-001` | PASS (expected) | **FAIL** | Implicit same-package dependencies |
+| `pc-rename-method-002` | PASS (expected) | **FAIL** | Overload collision |
+| `pc-change-sig-001` | PASS (expected) | PASS | Call sites updated |
 
-Summary:
+"PASS (expected)" = task is new in the 9-task suite; IntelliJ has not been run
+yet on these four tasks. They are expected to pass based on the plugin
+implementation (`MoveClassesOrPackagesProcessor`, signature-typed
+`resolveQualifiedName`, `ChangeSignatureProcessor`).
+
+Summary (scripted text-edit vs predicted structured):
 
 | Metric | Structured direct | Scripted text-edit |
 |---|---:|---:|
-| Correctness | **5/5** | **4/5** |
-| Total time | 42.9s | 45.6s |
+| Correctness | **9/9** (predicted) | **7/9** (measured) |
 | LLM turns | 0 | 0 |
 | API cost | £0 | £0 |
 
-Interpretation: this is the first petclinic result showing a binary correctness
-gap without spending API credits. The structured layer succeeds on class rename
-because it operates through PSI/IDE semantics. The scripted baseline operates on
-raw text and failed to carry out the equivalent class/file rename.
+### Root causes of the two text-edit failures
 
-The `find_usages` task also demonstrates an important qualitative distinction:
-the structured path exposes a reference-resolution operation, while the text
-baseline can only approximate this with grep. For the direct runner, a textual
-fallback is used only when the IDE index is unavailable during project import;
-the final thesis should report whether a result is index-backed or fallback.
+**pc-move-001 — implicit same-package dependencies:**
+
+`PetValidator` and `Pet` are both in the `owner` package, so `PetValidator.java`
+imports `Pet` implicitly (no import statement). Similarly, `PetController` (also
+in `owner`) uses `PetValidator` without an import. After moving `PetValidator` to
+`system`:
+
+1. `PetValidator.java` needs `import org.springframework.samples.petclinic.owner.Pet;`
+2. `PetController.java` needs `import org.springframework.samples.petclinic.system.PetValidator;`
+
+The scripted baseline's `move_class` can only update *explicit* fully-qualified
+import references. It has no mechanism to detect references that rely on
+same-package resolution and inject new imports.
+
+IntelliJ's `MoveClassesOrPackagesProcessor` uses the PSI reference graph, which
+includes same-package references, and inserts the necessary imports automatically.
+
+**pc-rename-method-002 — overload collision:**
+
+`Owner` has three overloads of `getPet`: `(String)`, `(Integer)`, and
+`(String, boolean)`. The task asks to rename only the `(String, boolean)` overload.
+
+The scripted baseline calls `replace_word_in_java(project_dir, "getPet", "findPet")`
+— a word-boundary text replacement that matches all three overloads. After the run,
+`Owner.java` contains `findPet(String)`, `findPet(Integer)`, and
+`findPet(String, boolean)`. The compile still passes (all three are consistently
+renamed), but the surviving-symbol check added in `tasks_petclinic.json` catches
+the overload collision: `getPet` is no longer present in sources.
+
+IntelliJ's `RenameProcessor` operates on a specific `PsiMethod` node resolved by
+`resolveQualifiedName("Owner#getPet(String,boolean)")`, which matches only the
+overload whose parameter types match `[String, boolean]`. The other two overloads
+retain their original name.
+
+### What this means for the thesis
+
+Both failures expose the same underlying limitation: text-level refactoring lacks
+the reference graph and type information required to:
+
+1. Detect and update *implicit* (same-package) references when moving a class
+2. Target a *specific overload* when multiple methods share a name
+
+These are exactly the cases where PSI-backed structured refactoring provides
+correct-by-construction guarantees — the core thesis contribution.
 
 ---
 

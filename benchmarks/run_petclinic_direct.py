@@ -62,8 +62,10 @@ def run_maven_compile(project_dir: Path) -> dict:
         )
         if result.returncode == 0:
             return {"ok": True}
-        err = ((result.stdout or "") + "\n" + (result.stderr or ""))[-4000:]
-        return {"ok": False, "error": err}
+        combined = (result.stdout or "") + "\n" + (result.stderr or "")
+        error_lines = [l for l in combined.splitlines() if "[ERROR]" in l or "error:" in l.lower()]
+        summary = "\n".join(error_lines[:30]) if error_lines else combined[-2000:]
+        return {"ok": False, "error": summary}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -305,6 +307,16 @@ def validate(
             else:
                 passed = False
                 notes.append(f"Symbol '{name}' NOT found in source files")
+
+            surviving = validation.get("survivingSymbol", "")
+            if surviving:
+                surviving_name = surviving.split("#")[-1] if "#" in surviving else surviving.rsplit(".", 1)[-1]
+                surviving_hits = grep_in_java_sources(project_dir, surviving_name) if surviving_name else []
+                if surviving_hits:
+                    notes.append(f"Surviving symbol '{surviving_name}' still present (good): {surviving_hits[0]}")
+                else:
+                    passed = False
+                    notes.append(f"Surviving symbol '{surviving_name}' was incorrectly renamed (overload collision)")
 
         elif vtype == "compile_and_refactoringminer":
             expected_type = validation.get("expectedRefactoringType", "")

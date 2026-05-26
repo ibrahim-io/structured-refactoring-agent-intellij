@@ -104,7 +104,7 @@ def find_usages(project_dir: Path, qualified_name: str) -> dict:
 
 def rename_symbol(project_dir: Path, params: dict) -> dict:
     qualified_name = params["qualifiedName"]
-    old_name = simple_member_name(qualified_name)
+    old_name = simple_member_name(qualified_name) if "#" in qualified_name else qualified_name.rsplit(".", 1)[-1]
     new_name = params["newName"]
     replacements = replace_word_in_java(project_dir, old_name, new_name)
 
@@ -192,7 +192,7 @@ def change_signature(project_dir: Path, params: dict) -> dict:
     for change in changes:
         declaration = f"{change['type']} {change['name']}"
         new_params.append(declaration)
-        if str(change.get("oldIndex", "")) == "-1":
+        if "oldIndex" not in change or str(change.get("oldIndex", "")) == "-1":
             added_params.append(change.get("defaultValue", "0"))
 
     file_path = class_qn_to_path(project_dir, qualified_name)
@@ -343,7 +343,10 @@ def run_maven_compile(project_dir: Path) -> dict:
         )
         if result.returncode == 0:
             return {"ok": True}
-        return {"ok": False, "error": ((result.stdout or "") + "\n" + (result.stderr or ""))[-4000:]}
+        combined = (result.stdout or "") + "\n" + (result.stderr or "")
+        error_lines = [l for l in combined.splitlines() if "[ERROR]" in l or "error:" in l.lower()]
+        summary = "\n".join(error_lines[:30]) if error_lines else combined[-2000:]
+        return {"ok": False, "error": summary}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -448,6 +451,16 @@ def validate(task: dict, result: dict, project_dir: Path) -> dict:
                     notes.append(f"Cross-file: old name '{old_name}' still in sources: {stale[:5]}")
                 elif old_name:
                     notes.append(f"Cross-file: old name '{old_name}' absent from all source files")
+
+            surviving = validation.get("survivingSymbol", "")
+            if surviving:
+                surviving_name = surviving.split("#")[-1] if "#" in surviving else surviving.rsplit(".", 1)[-1]
+                surviving_hits = grep_in_java_sources(project_dir, surviving_name) if surviving_name else []
+                if surviving_hits:
+                    notes.append(f"Surviving symbol '{surviving_name}' still present (good): {surviving_hits[0]}")
+                else:
+                    passed = False
+                    notes.append(f"Surviving symbol '{surviving_name}' was incorrectly renamed (overload collision)")
 
         elif vtype == "compile_and_refactoringminer":
             notes.append("RefactoringMiner: N/A for direct text-edit baseline")

@@ -3,7 +3,7 @@
 The sample-java-project benchmark (`tasks.json`) reached 8/8 vs 8/8. On a
 10-file project, the structural advantage mainly appears as efficiency: fewer
 tool calls and fewer agent turns. The petclinic suite (`tasks_petclinic.json`)
-tests the same idea on a real Spring Boot codebase.
+tests the same idea on a real Spring Boot codebase (30+ classes, ~4000 LOC).
 
 ## State After Preparation
 
@@ -66,7 +66,7 @@ python benchmarks/run_petclinic_direct.py `
     --tasks benchmarks/tasks_petclinic.json `
     --projects-dir benchmarks/projects `
     --agent-port 6473 `
-    --out results/structured-petclinic-direct-1.json
+    --out results/structured-petclinic-direct-5.json
 ```
 
 Cheap smoke tests:
@@ -115,7 +115,7 @@ without an AST, without an LLM, and without API credits.
 python benchmarks/run_text_edit_direct.py `
     --tasks benchmarks/tasks_petclinic.json `
     --projects-dir benchmarks/projects `
-    --out results/text-edit-petclinic-direct-1.json
+    --out results/text-edit-petclinic-direct-5.json
 ```
 
 Interpretation:
@@ -135,47 +135,79 @@ python benchmarks/compare_results.py `
     results/text-edit-petclinic-1.json
 ```
 
-## Expected Outcomes
+## Expected Outcomes (9-task suite)
 
-| Task | Structured API | No-API direct | Text-edit | Differentiator |
+| Task | Structured API | No-API direct | Text-edit direct | Differentiator |
 |---|---|---|---|---|
-| `pc-rename-001` (`Owner.telephone` to `phoneNumber`) | PASS | PASS | PASS | Efficiency / scale |
-| `pc-add-method-001` (`Owner.getFullName`) | PASS | PASS | PASS | Tool-layer persistence |
-| `pc-find-usages-001` (`Pet` usages) | PASS | PASS | FAIL or N/A | Structural reference index |
-| `pc-read-file-001` (`Owner.java`) | PASS | PASS | PASS | Basic inspection |
-| `pc-rename-002` (`CrashController` to `PanicController`) | PASS | PASS or reveals class-file rename gap | PASS/FAIL | Class rename + file rename |
+| `pc-rename-001` (field rename) | PASS | PASS | PASS | Efficiency / scale |
+| `pc-add-method-001` (add method) | PASS | PASS | PASS | Tool-layer persistence |
+| `pc-find-usages-001` (Pet usages) | PASS | PASS | PASS (grep) | Index vs grep precision |
+| `pc-read-file-001` (read Owner) | PASS | PASS | PASS | Basic inspection |
+| `pc-rename-002` (class+file rename) | PASS | PASS | PASS | Both rename file correctly |
+| `pc-rename-method-001` (addVisit→recordVisit) | PASS | PASS | PASS | Both update cross-file callers |
+| `pc-move-001` (PetValidator→system) | PASS | PASS | **FAIL** | Implicit same-package deps |
+| `pc-rename-method-002` (getPet overload) | PASS | PASS | **FAIL** | Overload-specific rename |
+| `pc-change-sig-001` (addPet +param) | PASS | PASS | PASS | Both update call sites |
 
-If direct mode fails, the failure is in the structured tool implementation or
-IntelliJ project state. If direct mode passes but API mode fails, the issue is
-agent tool choice rather than the underlying structured operation.
+**Predicted: Structured 9/9, Text-edit 7/9**
+
+The two text-edit failures expose fundamental limitations of text editing:
+
+1. **pc-move-001**: `PetValidator` references `Pet` from the same `owner` package,
+   and `PetController` uses `PetValidator` also from the same package. After moving
+   `PetValidator` to `system`, both callers need new import statements. Text editing
+   can only update *explicit* imports; IntelliJ's `MoveClassesOrPackagesProcessor`
+   resolves the full reference graph including implicit same-package dependencies.
+
+2. **pc-rename-method-002**: Asks to rename only the two-parameter overload
+   `getPet(String, boolean)`. Text replacement is name-only: it renames all three
+   `getPet` overloads (`(String)`, `(Integer)`, `(String, boolean)`) to `findPet`.
+   IntelliJ's `RenameProcessor` resolves the specific PSI method node for that
+   overload, leaving the other overloads untouched.
 
 ## Actual No-API Results
 
-Latest direct no-API run:
+### Structured direct (last full run: `results/structured-petclinic-direct-4.json`)
 
-- Structured direct: `results/structured-petclinic-direct-4.json` -> **5/5**
-- Scripted text-edit direct: `results/text-edit-petclinic-direct-1.json` -> **4/5**
+5 tasks were run before the 4 new tasks were added. IntelliJ must be relaunched
+on petclinic to run the full 9-task suite:
 
-The structured-only win is `pc-rename-002` (`CrashController` to
-`PanicController`). The structured tool performs the class rename successfully;
-the scripted text-edit baseline fails to make the equivalent class/file change.
+```powershell
+$env:BENCHMARK_PROJECT = "spring-petclinic"
+.\gradlew.bat runIde
+# after indexing completes:
+python benchmarks/run_petclinic_direct.py `
+    --tasks benchmarks/tasks_petclinic.json `
+    --projects-dir benchmarks/projects `
+    --out results/structured-petclinic-direct-5.json
+```
+
+### Scripted text-edit direct (last full run: `results/text-edit-petclinic-direct-4.json`)
+
+Canonical 9-task result: **7/9**
+
+- PASS (7): pc-rename-001, pc-add-method-001, pc-find-usages-001,
+  pc-read-file-001, pc-rename-002, pc-rename-method-001, pc-change-sig-001
+- FAIL (2): pc-move-001 (implicit same-package deps), pc-rename-method-002
+  (overload collision — all getPet variants renamed to findPet)
 
 Comparison command:
 
 ```powershell
 python benchmarks/compare_results.py `
-    results/structured-petclinic-direct-4.json `
-    results/text-edit-petclinic-direct-1.json
+    results/structured-petclinic-direct-5.json `
+    results/text-edit-petclinic-direct-4.json
 ```
 
 ## After The Run
 
-If results are roughly as expected, add harder cross-file tasks such as:
+If results are roughly as expected (9/9 vs 7/9), the next step is the full LLM
+agent comparison (Option A vs Option C) to measure how the structural advantage
+manifests in agent-generated refactoring decisions.
 
-- Rename `Pet` across controllers, repositories, tests, and templates.
-- Move `Owner` or `Pet` to a new package.
-- Rename a field used by validation, persistence, templates, and tests.
+Harder tasks to add if the gap is too small:
 
-If text-edit unexpectedly matches structured on petclinic, step up to a larger
-Spring project where context-window limits and manual reference enumeration are
-more likely to bite.
+- Rename `Pet` across controllers, repositories, tests, and templates (10+
+  same-package and cross-package references).
+- Move `Owner` to a new package (many callers in the same package).
+- Rename a field used by Bean Validation annotations and Thymeleaf templates.
