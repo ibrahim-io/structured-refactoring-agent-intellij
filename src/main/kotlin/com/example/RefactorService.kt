@@ -11,6 +11,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.JavaPsiFacade
@@ -22,11 +23,12 @@ import com.intellij.psi.PsiJavaFile
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiMethod
 import com.intellij.psi.PsiNamedElement
-import com.intellij.psi.PsiReference
 import com.intellij.psi.PsiVariable
 import com.intellij.codeInsight.CodeInsightUtil
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiExpression
+import com.intellij.psi.PsiMethodCallExpression
+import com.intellij.psi.PsiReturnStatement
 import com.intellij.psi.PsiStatement
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
@@ -40,7 +42,6 @@ import com.intellij.refactoring.changeSignature.ParameterInfoImpl
 import com.intellij.refactoring.util.CanonicalTypes
 import com.intellij.refactoring.move.moveClassesOrPackages.MoveClassesOrPackagesProcessor
 import com.intellij.refactoring.move.moveClassesOrPackages.SingleSourceRootMoveDestination
-import com.intellij.refactoring.inline.InlineMethodProcessor
 import com.intellij.refactoring.rename.RenameProcessor
 import com.intellij.refactoring.safeDelete.SafeDeleteProcessor
 import org.jetbrains.kotlin.psi.KtClass
@@ -90,10 +91,12 @@ class RefactorService(private val project: Project) {
      *   com.example.MyClass#myMethod         — first matching method
      *   com.example.MyClass#myMethod(int)    — method with parameter types
      */
-    fun findSymbolByName(qualifiedName: String): SymbolInfo? =
-        ReadAction.compute<SymbolInfo?, RuntimeException> {
+    fun findSymbolByName(qualifiedName: String): SymbolInfo? {
+        DumbService.getInstance(project).waitForSmartMode()
+        return ReadAction.compute<SymbolInfo?, RuntimeException> {
             resolveQualifiedName(qualifiedName)?.toSymbolInfo()
         }
+    }
 
     /**
      * List all named top-level symbols in a file (classes, their fields and methods).
@@ -165,11 +168,12 @@ class RefactorService(private val project: Project) {
     /**
      * Find all project-scope usages of a symbol by qualified name.
      */
-    fun findUsages(qualifiedName: String): List<UsageInfo> =
-        ReadAction.compute<List<UsageInfo>, RuntimeException> {
+    fun findUsages(qualifiedName: String): List<UsageInfo> {
+        DumbService.getInstance(project).waitForSmartMode()
+        return ReadAction.compute<List<UsageInfo>, RuntimeException> {
             val element = resolveQualifiedName(qualifiedName) ?: return@compute emptyList()
             val scope = GlobalSearchScope.projectScope(project)
-            ReferencesSearch.search(element, scope).findAll().mapNotNull { ref ->
+            val indexedUsages = ReferencesSearch.search(element, scope).findAll().mapNotNull { ref ->
                 val vf = ref.element.containingFile?.virtualFile ?: return@mapNotNull null
                 val doc = FileDocumentManager.getInstance().getDocument(vf) ?: return@mapNotNull null
                 val absOffset = ref.element.textOffset + ref.rangeInElement.startOffset
@@ -184,7 +188,10 @@ class RefactorService(private val project: Project) {
                     kind = ref.element.javaClass.simpleName,
                 )
             }
+            if (indexedUsages.isNotEmpty()) return@compute indexedUsages
+            findTextualUsagesFallback(element)
         }
+    }
 
     // ── Rename ───────────────────────────────────────────────────────────────
 
@@ -196,15 +203,13 @@ class RefactorService(private val project: Project) {
     ): Result {
         if (newName.isBlank()) return Result.Err("newName must not be blank")
         val oldName = ReadAction.compute<String, RuntimeException> { element.name ?: "<unnamed>" }
-        // Collect references before the write (they become invalid after rename)
-        val refs = ReadAction.compute<List<PsiReference>, RuntimeException> {
-            ReferencesSearch.search(element, GlobalSearchScope.projectScope(project)).findAll().toList()
-        }
-        return runWriteOnEdt("Agent Rename") {
-            // Rename each reference (reverse offset order so earlier edits don't shift later ones)
-            refs.sortedByDescending { ref -> ref.element.textOffset }
-                .forEach { ref -> try { ref.handleElementRename(newName) } catch (_: Exception) {} }
-            element.setName(newName)
+        // RenameProcessor handles cross-file reference updates and, critically, renames
+        // the containing .java file when a public class is renamed — the manual approach
+        // (setName + handleElementRename) does not trigger the file rename.
+        return runProcessorOnEdt {
+            val processor = RenameProcessor(project, element, newName, searchInComments, searchTextOccurrences)
+            processor.setPreviewUsages(false)
+            processor.run()
             Result.Ok("renamed \"$oldName\" → \"$newName\"")
         }
     }
@@ -228,6 +233,8 @@ class RefactorService(private val project: Project) {
         searchInComments: Boolean = true,
         searchTextOccurrences: Boolean = true,
     ): Result {
+        refreshProjectFromDisk()
+        DumbService.getInstance(project).waitForSmartMode()
         val element = ReadAction.compute<PsiNamedElement?, RuntimeException> {
             resolveQualifiedName(qualifiedName) as? PsiNamedElement
         } ?: return Result.Err("could not resolve \"$qualifiedName\"")
@@ -267,6 +274,8 @@ class RefactorService(private val project: Project) {
         searchInCommentsAndStrings: Boolean = true,
         searchNonJava: Boolean = true,
     ): Result {
+        refreshProjectFromDisk()
+        DumbService.getInstance(project).waitForSmartMode()
         val element = ReadAction.compute<PsiElement?, RuntimeException> {
             resolveQualifiedName(qualifiedName)
         } ?: return Result.Err("could not resolve \"$qualifiedName\"")
@@ -280,10 +289,11 @@ class RefactorService(private val project: Project) {
      * [targetPackage] must exist as a directory in the project's source roots.
      */
     fun moveClass(qualifiedClassName: String, targetPackage: String): Result {
+        refreshProjectFromDisk()
+        DumbService.getInstance(project).waitForSmartMode()
         val facade = JavaPsiFacade.getInstance(project)
-        val scope = GlobalSearchScope.projectScope(project)
         val cls = ReadAction.compute<PsiClass?, RuntimeException> {
-            facade.findClass(qualifiedClassName, scope)
+            resolveClassByQualifiedName(qualifiedClassName)
         } ?: return Result.Err("Class '$qualifiedClassName' not found")
 
         val targetDir = ReadAction.compute<com.intellij.psi.PsiDirectory?, RuntimeException> {
@@ -326,6 +336,7 @@ class RefactorService(private val project: Project) {
         newReturnType: String? = null,
         parameterChanges: List<Map<String, String>> = emptyList(),
     ): Result {
+        refreshProjectFromDisk()
         val method = ReadAction.compute<PsiMethod?, RuntimeException> {
             val element = resolveQualifiedName(qualifiedName)
             element as? PsiMethod
@@ -395,28 +406,62 @@ class RefactorService(private val project: Project) {
      * Inline a method: replace every call site with the method body (with parameter
      * substitution) and optionally delete the original declaration.
      *
-     * Uses IntelliJ's InlineMethodProcessor, which handles all edge cases —
-     * parameter substitution, name shadowing, return-value extraction — that
-     * text-edit approaches cannot do correctly.
+     * Supports single-return methods. Uses direct PSI manipulation via
+     * WriteCommandAction — avoids BaseRefactoringProcessor.run() which defers
+     * work via invokeLater and silently no-ops in non-interactive mode.
      */
     fun inlineMethod(qualifiedName: String, deleteOriginal: Boolean = true): Result {
-        val method = ReadAction.compute<PsiMethod?, RuntimeException> {
-            resolveQualifiedName(qualifiedName) as? PsiMethod
-        } ?: return Result.Err("'$qualifiedName' did not resolve to a method")
+        refreshProjectFromDisk()
+        DumbService.getInstance(project).waitForSmartMode()
 
-        val methodName = ReadAction.compute<String, RuntimeException> { method.name }
+        // Collect everything we need in a single read pass before any mutations.
+        data class CallSite(val call: PsiMethodCallExpression, val argTexts: List<String>)
+        data class InlineInfo(
+            val method: PsiMethod,
+            val methodName: String,
+            val paramNames: List<String>,
+            val bodyExprText: String,
+            val callSites: List<CallSite>,
+        )
 
-        return runProcessorOnEdt {
-            InlineMethodProcessor(
-                project,
-                method,
-                null,           // reference: null = inline all occurrences
-                null,           // editor: null = no dialog
-                false,          // inlineThisOnly: false = inline every call site
-                deleteOriginal, // removeOriginalMethod
-                true,           // isWritable
-            ).run()
-            Result.Ok("Inlined method '$methodName'${if (deleteOriginal) " and deleted original" else ""}")
+        val info = ReadAction.compute<InlineInfo?, RuntimeException> {
+            val method = resolveQualifiedName(qualifiedName) as? PsiMethod
+                ?: return@compute null
+            val params = method.parameterList.parameters
+            val body = method.body ?: return@compute null
+            val stmts = body.statements
+            if (stmts.size != 1) return@compute null
+            val retExpr = (stmts[0] as? PsiReturnStatement)?.returnValue ?: return@compute null
+            val paramNames = params.map { it.name ?: "" }
+            val bodyExprText = retExpr.text
+
+            val scope = GlobalSearchScope.projectScope(project)
+            val sites = ReferencesSearch.search(method, scope).findAll().mapNotNull { ref ->
+                var el: PsiElement? = ref.element.parent
+                while (el != null && el !is PsiMethodCallExpression) el = el.parent
+                val call = el as? PsiMethodCallExpression ?: return@mapNotNull null
+                val argTexts = call.argumentList.expressions.map { it.text }
+                if (argTexts.size != paramNames.size) return@mapNotNull null
+                CallSite(call, argTexts)
+            }
+            InlineInfo(method, method.name, paramNames, bodyExprText, sites)
+        } ?: return Result.Err("'$qualifiedName' did not resolve to a single-return method")
+
+        return runWriteOnEdt("Agent Inline Method") {
+            val factory = JavaPsiFacade.getElementFactory(project)
+            for (site in info.callSites) {
+                var exprText = info.bodyExprText
+                for ((i, paramName) in info.paramNames.withIndex()) {
+                    val argText = site.argTexts[i]
+                    // Wrap complex args in parens to preserve operator precedence
+                    val safe = if (argText.matches(Regex("[a-zA-Z_\$][a-zA-Z0-9_\$]*"))) argText else "($argText)"
+                    exprText = exprText.replace(Regex("\\b${Regex.escape(paramName)}\\b"), safe)
+                }
+                val newExpr = factory.createExpressionFromText(exprText, site.call)
+                site.call.replace(newExpr)
+            }
+            if (deleteOriginal) info.method.delete()
+            Result.Ok("Inlined method '${info.methodName}' at ${info.callSites.size} call site(s)${if (deleteOriginal) " and deleted original" else ""}")
         }
     }
 
@@ -427,6 +472,7 @@ class RefactorService(private val project: Project) {
      * Uses IntelliJ's newImpl MethodExtractor — no editor or dialog required.
      */
     fun extractMethod(filePath: String, startOffset: Int, endOffset: Int, newMethodName: String): Result {
+        refreshProjectFromDisk()
         val vf = LocalFileSystem.getInstance().findFileByPath(filePath)
             ?: return Result.Err("File not found: $filePath")
 
@@ -457,6 +503,7 @@ class RefactorService(private val project: Project) {
      * Inserts a declaration before the enclosing statement and replaces the expression with the name.
      */
     fun extractVariable(filePath: String, startOffset: Int, endOffset: Int, varName: String): Result {
+        refreshProjectFromDisk()
         val vf = LocalFileSystem.getInstance().findFileByPath(filePath)
             ?: return Result.Err("File not found: $filePath")
 
@@ -497,15 +544,12 @@ class RefactorService(private val project: Project) {
      *   com.example.Foo#doThing(int,String) → PsiMethod matching parameter types
      */
     private fun resolveQualifiedName(qualifiedName: String): PsiElement? {
-        val facade = JavaPsiFacade.getInstance(project)
-        val scope = GlobalSearchScope.projectScope(project)
-
         if (!qualifiedName.contains('#')) {
-            return facade.findClass(qualifiedName, scope)
+            return resolveClassByQualifiedName(qualifiedName)
         }
 
         val (className, memberPart) = qualifiedName.split('#', limit = 2)
-        val cls = facade.findClass(className, scope) ?: return null
+        val cls = resolveClassByQualifiedName(className) ?: return null
 
         // Parse optional parameter list: methodName(type1,type2)
         val parenIdx = memberPart.indexOf('(')
@@ -525,6 +569,92 @@ class RefactorService(private val project: Project) {
                             params[i].type.canonicalText == paramTypes[i]
                     }
             } ?: cls.findMethodsByName(methodName, true).firstOrNull()
+        }
+    }
+
+    /**
+     * Resolve a Java class through IntelliJ's index first, then by deriving the
+     * source path from the qualified name. The fallback keeps the tool API useful
+     * while a Maven/Gradle project is still importing or when source roots are not
+     * configured yet, which is common in benchmark sandboxes.
+     */
+    private fun resolveClassByQualifiedName(qualifiedName: String): PsiClass? {
+        val facade = JavaPsiFacade.getInstance(project)
+        val scope = GlobalSearchScope.projectScope(project)
+        facade.findClass(qualifiedName, scope)?.let { return it }
+
+        val relativePath = qualifiedName.replace('.', '/') + ".java"
+        val roots = ProjectRootManager.getInstance(project).contentSourceRoots.toMutableList()
+        project.baseDir?.let { baseDir ->
+            roots.add(baseDir)
+            baseDir.findFileByRelativePath("src/main/java")?.let { roots.add(it) }
+            baseDir.findFileByRelativePath("src/test/java")?.let { roots.add(it) }
+        }
+
+        val psiManager = PsiManager.getInstance(project)
+        for (root in roots.distinctBy { it.path }) {
+            val vf = root.findFileByRelativePath(relativePath) ?: continue
+            val javaFile = psiManager.findFile(vf) as? PsiJavaFile ?: continue
+            javaFile.classes.firstOrNull { it.qualifiedName == qualifiedName }?.let { return it }
+            javaFile.classes.firstOrNull { it.name == qualifiedName.substringAfterLast('.') }?.let { return it }
+        }
+        return null
+    }
+
+    private fun findTextualUsagesFallback(element: PsiElement): List<UsageInfo> {
+        val name = (element as? PsiNamedElement)?.name ?: return emptyList()
+        val pattern = Regex("""\b${Regex.escape(name)}\b""")
+        val roots = ProjectRootManager.getInstance(project).contentSourceRoots.toMutableList()
+        project.baseDir?.let { baseDir ->
+            roots.add(baseDir)
+            baseDir.findFileByRelativePath("src/main/java")?.let { roots.add(it) }
+            baseDir.findFileByRelativePath("src/test/java")?.let { roots.add(it) }
+        }
+        val result = mutableListOf<UsageInfo>()
+        for (root in roots.distinctBy { it.path }) {
+            collectJavaFiles(root).forEach { vf ->
+                val doc = FileDocumentManager.getInstance().getDocument(vf) ?: return@forEach
+                for (lineIdx in 0 until doc.lineCount) {
+                    val line = doc.getText(TextRange(doc.getLineStartOffset(lineIdx), doc.getLineEndOffset(lineIdx)))
+                    if (pattern.containsMatchIn(line)) {
+                        result.add(
+                            UsageInfo(
+                                filePath = vf.path,
+                                line = lineIdx + 1,
+                                preview = line.trim(),
+                                kind = "textual-fallback",
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    private fun collectJavaFiles(root: VirtualFile): List<VirtualFile> {
+        val result = mutableListOf<VirtualFile>()
+        fun visit(file: VirtualFile) {
+            if (file.isDirectory) {
+                file.children.forEach { visit(it) }
+            } else if (file.extension == "java") {
+                result.add(file)
+            }
+        }
+        visit(root)
+        return result
+    }
+
+    /** Force-sync all project source roots from disk before reading or
+     * mutating PSI. Resolves "file changed externally" conflicts that would
+     * otherwise cause saveAllDocuments() to silently fail. Required after
+     * external file changes (e.g. git reset in benchmark runs). */
+    private fun refreshProjectFromDisk() {
+        ApplicationManager.getApplication().invokeAndWait {
+            val roots = ProjectRootManager.getInstance(project).contentSourceRoots
+            for (root in roots) {
+                root.refresh(false, true)
+            }
         }
     }
 

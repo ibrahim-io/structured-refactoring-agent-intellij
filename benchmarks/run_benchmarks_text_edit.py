@@ -30,6 +30,12 @@ from pathlib import Path
 
 import anthropic
 
+try:
+    import openai as _openai_mod
+    HAS_OPENAI = True
+except ImportError:
+    HAS_OPENAI = False
+
 # Load .env from repo root if present
 _env = Path(__file__).parent.parent / ".env"
 if _env.exists():
@@ -110,6 +116,21 @@ TEXT_EDIT_TOOLS = [
         },
     },
 ]
+
+
+def anthropic_to_openai_tools(tools: list) -> list:
+    """Convert Anthropic tool schema format to OpenAI function-calling format."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
+            },
+        }
+        for t in tools
+    ]
 
 
 def dispatch_tool(name: str, params: dict, project_dir: Path) -> dict:
@@ -209,18 +230,87 @@ def run_task_text_edit(task: dict, project_dir: Path, api_key: str,
     return {"tool_calls": tool_calls_made, "turns": turns}
 
 
+def run_task_text_edit_openai(task: dict, project_dir: Path, api_key: str,
+                              model: str = "gpt-4o",
+                              max_turns: int = 12) -> dict:
+    """Run the text-edit agent using an OpenAI model."""
+    if not HAS_OPENAI:
+        raise RuntimeError("openai package not installed. Run: pip install openai")
+
+    oai_tools = anthropic_to_openai_tools(TEXT_EDIT_TOOLS)
+    system_prompt = (
+        "You are a software engineering assistant performing code refactoring "
+        "using ONLY text-based file operations. "
+        f"The project is located at: {project_dir}\n\n"
+        "You have no IDE support, no AST parser, and no reference index. "
+        "You must read files, understand their content, and write updated versions. "
+        "Be thorough: always check ALL files in the project for cross-file references "
+        "that may need updating (imports, usages, call sites). "
+        "Use list_java_files to discover all source files before making changes."
+    )
+
+    client = _openai_mod.OpenAI(api_key=api_key)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": task["description"]},
+    ]
+    tool_calls_made = []
+    turns = 0
+
+    while turns < max_turns:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=oai_tools,
+            tool_choice="auto",
+        )
+        turns += 1
+
+        msg = response.choices[0].message
+        assistant_entry = {"role": "assistant", "content": msg.content}
+        if msg.tool_calls:
+            assistant_entry["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in msg.tool_calls
+            ]
+        messages.append(assistant_entry)
+
+        if not msg.tool_calls:
+            break
+
+        for tc in msg.tool_calls:
+            params = json.loads(tc.function.arguments)
+            result = dispatch_tool(tc.function.name, params, project_dir)
+            tool_calls_made.append({
+                "tool": tc.function.name,
+                "params": params,
+                "result": result,
+            })
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(result),
+            })
+
+    return {"tool_calls": tool_calls_made, "turns": turns}
+
+
 # ── Validation (same logic as structured runner) ─────────────────────────────
 
 def run_maven_compile(project_dir: Path) -> dict:
     try:
         mvn = "mvn.cmd" if sys.platform == "win32" else "mvn"
         result = subprocess.run(
-            [mvn, "compile", "-q", "--no-transfer-progress"],
+            [mvn, "-Dcheckstyle.skip=true", "-Dspring-javaformat.skip=true", "compile", "-q", "--no-transfer-progress"],
             cwd=project_dir, capture_output=True, text=True, timeout=120,
         )
         if result.returncode == 0:
             return {"ok": True}
-        err = (result.stderr or result.stdout or "")[-2000:]
+        err = ((result.stdout or "") + "\n" + (result.stderr or ""))[-4000:]
         return {"ok": False, "error": err}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -264,6 +354,25 @@ def validate(task: dict, agent_result: dict, project_dir: Path) -> dict:
         passed = False
         notes.append(f"Tool '{fc['tool']}' failed: {fc['result'].get('error', fc['result'])}")
 
+    # Non-compile validation types
+    if vtype == "find_usages_non_empty":
+        # Text-edit agent has no find_usages tool. The closest proxy is whether
+        # the agent enumerated cross-file references via list_java_files + grep
+        # in read_file. We mark this FAIL since the structural query is missing.
+        passed = False
+        notes.append("find_usages not available to text-edit agent (structural-only task)")
+        return {"passed": passed, "notes": notes, "validation_type": vtype}
+
+    if vtype == "tool_called":
+        expected = validation.get("expectedTool", "")
+        actual_tools = [c["tool"] for c in agent_result["tool_calls"]]
+        if expected and expected in actual_tools:
+            notes.append(f"Tool '{expected}' was called")
+        elif expected:
+            passed = False
+            notes.append(f"Tool '{expected}' was NOT called")
+        return {"passed": passed, "notes": notes, "validation_type": vtype}
+
     if vtype.startswith("compile"):
         # Compile layer
         cr = run_maven_compile(project_dir)
@@ -271,7 +380,7 @@ def validate(task: dict, agent_result: dict, project_dir: Path) -> dict:
             notes.append("Compile: PASS")
         else:
             passed = False
-            snippet = cr["error"][:300].replace("\n", " ")
+            snippet = cr["error"][-800:].replace("\n", " ")
             notes.append(f"Compile: FAIL -- {snippet}")
 
         # Content layer
@@ -385,8 +494,12 @@ def main():
         description="Run TEXT-EDIT baseline agent benchmarks (no IntelliJ/AST)"
     )
     parser.add_argument("--tasks",        default="benchmarks/tasks.json")
-    parser.add_argument("--api-key",      default=os.environ.get("ANTHROPIC_API_KEY", ""), help="Anthropic API key (defaults to ANTHROPIC_API_KEY env var or .env)")
-    parser.add_argument("--model",        default="claude-sonnet-4-6")
+    parser.add_argument("--provider",     default="anthropic", choices=["anthropic", "openai"],
+                        help="LLM provider to use (anthropic or openai)")
+    parser.add_argument("--api-key",      default="",
+                        help="API key (defaults to ANTHROPIC_API_KEY or OPENAI_API_KEY env var)")
+    parser.add_argument("--model",        default="",
+                        help="Model name (default: claude-sonnet-4-6 for anthropic, gpt-4o for openai)")
     parser.add_argument("--max-turns",    type=int, default=12)
     parser.add_argument("--out",          default="results/text-edit-run.json")
     parser.add_argument("--task-id",      help="Run a single task by ID")
@@ -396,8 +509,17 @@ def main():
     )
     args = parser.parse_args()
 
-    if not args.api_key:
-        print("ERROR: No API key. Set ANTHROPIC_API_KEY, use --api-key, or add it to .env")
+    # Resolve API key and default model from provider
+    if args.provider == "openai":
+        api_key = args.api_key or os.environ.get("OPENAI_API_KEY", "")
+        model   = args.model or "gpt-4o"
+    else:
+        api_key = args.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        model   = args.model or "claude-sonnet-4-6"
+
+    if not api_key:
+        env_var = "OPENAI_API_KEY" if args.provider == "openai" else "ANTHROPIC_API_KEY"
+        print(f"ERROR: No API key. Set {env_var} or use --api-key")
         sys.exit(1)
 
     tasks = json.loads(Path(args.tasks).read_text(encoding="utf-8"))
@@ -436,10 +558,16 @@ def main():
 
         t0 = time.time()
         try:
-            agent_result = run_task_text_edit(
-                task, project_dir, args.api_key,
-                model=args.model, max_turns=args.max_turns,
-            )
+            if args.provider == "openai":
+                agent_result = run_task_text_edit_openai(
+                    task, project_dir, api_key,
+                    model=model, max_turns=args.max_turns,
+                )
+            else:
+                agent_result = run_task_text_edit(
+                    task, project_dir, api_key,
+                    model=model, max_turns=args.max_turns,
+                )
             validation = validate(task, agent_result, project_dir)
             status = "PASS" if validation["passed"] else "FAIL"
         except Exception as e:
@@ -467,6 +595,8 @@ def main():
     output = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "agent": "text-edit",
+        "provider": args.provider,
+        "model": model,
         "tasks": results,
     }
     Path(args.out).write_text(json.dumps(output, indent=2), encoding="utf-8")

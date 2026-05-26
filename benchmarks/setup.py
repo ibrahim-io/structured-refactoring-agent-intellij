@@ -21,10 +21,13 @@ from pathlib import Path
 
 PROJECTS_DIR = Path(__file__).parent / "projects"
 
-# spring-petclinic at tag 3.3.0 (stable, well-known class structure)
-PETCLINIC_REPO = "https://github.com/spring-projects/spring-petclinic.git"
-PETCLINIC_TAG  = "3.3.0"
-PETCLINIC_DIR  = PROJECTS_DIR / "spring-petclinic"
+# spring-petclinic — clone main and pin to the SHA recorded after first clone
+# (the repo doesn't ship semantic-version tags; we capture the commit SHA into
+# a sibling file so benchmark runs remain reproducible across sessions).
+PETCLINIC_REPO   = "https://github.com/spring-projects/spring-petclinic.git"
+PETCLINIC_BRANCH = "main"
+PETCLINIC_DIR    = PROJECTS_DIR / "spring-petclinic"
+PETCLINIC_SHA_FILE = PROJECTS_DIR / "spring-petclinic.sha"
 
 SAMPLE_PROJECT_DIR = PROJECTS_DIR / "sample-java-project"
 
@@ -51,20 +54,27 @@ def check_sample_project() -> bool:
 
 
 def clone_petclinic() -> bool:
-    """Clone spring-petclinic at the known tag."""
+    """Clone spring-petclinic at the known branch and record the HEAD SHA."""
     if PETCLINIC_DIR.exists():
         print(f"[OK] spring-petclinic already present at {PETCLINIC_DIR}")
         return True
-    print(f"Cloning spring-petclinic {PETCLINIC_TAG} …")
+    print(f"Cloning spring-petclinic {PETCLINIC_BRANCH} ...")
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
-        ["git", "clone", "--depth", "1", "--branch", PETCLINIC_TAG, PETCLINIC_REPO, str(PETCLINIC_DIR)],
+        ["git", "clone", "--depth", "1", "--branch", PETCLINIC_BRANCH, PETCLINIC_REPO, str(PETCLINIC_DIR)],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
         print(f"[ERROR] git clone failed:\n{result.stderr}")
         return False
+    # Record the SHA so benchmarks remain reproducible
+    sha_r = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=PETCLINIC_DIR, capture_output=True, text=True,
+    )
+    sha = sha_r.stdout.strip()
+    PETCLINIC_SHA_FILE.write_text(sha + "\n", encoding="utf-8")
     print(f"[OK] spring-petclinic cloned to {PETCLINIC_DIR}")
+    print(f"     HEAD SHA recorded: {sha}")
     print("     Open this directory in IntelliJ and let Maven sync complete before running benchmarks.")
     return True
 

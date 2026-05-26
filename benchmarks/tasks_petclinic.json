@@ -51,13 +51,79 @@
   },
   {
     "id": "pc-rename-002",
-    "description": "Rename the class org.springframework.samples.petclinic.system.CrashController to PanicController.",
+    "description": "Rename the class org.springframework.samples.petclinic.system.CrashController to PanicController. The file should also be renamed.",
     "project": "spring-petclinic",
     "projectTag": "3.3.0",
     "operations": [
       { "tool": "find_symbol_by_name", "params": { "qualifiedName": "org.springframework.samples.petclinic.system.CrashController" } },
       { "tool": "rename_symbol",       "params": { "qualifiedName": "org.springframework.samples.petclinic.system.CrashController", "newName": "PanicController" } }
     ],
-    "validation": { "type": "compile_and_refactoringminer", "expectedRefactoringType": "Rename Class" }
+    "validation": {
+      "type": "compile_and_file_exists",
+      "expectedFile": "org/springframework/samples/petclinic/system/PanicController.java"
+    }
+  },
+  {
+    "id": "pc-rename-method-001",
+    "description": "Rename the method 'addVisit' in class org.springframework.samples.petclinic.owner.Owner to 'recordVisit'. Update all callers across the project.",
+    "project": "spring-petclinic",
+    "projectTag": "3.3.0",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Owner#addVisit" } },
+      { "tool": "rename_symbol",       "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Owner#addVisit", "newName": "recordVisit" } }
+    ],
+    "validation": {
+      "type": "compile_and_symbol_exists",
+      "expectedSymbol": "org.springframework.samples.petclinic.owner.Owner#recordVisit",
+      "crossFileCheck": true
+    }
+  },
+  {
+    "id": "pc-move-001",
+    "description": "Move the class org.springframework.samples.petclinic.owner.PetValidator to the package org.springframework.samples.petclinic.system. Update all import statements and references across the project.",
+    "project": "spring-petclinic",
+    "projectTag": "3.3.0",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.PetValidator" } },
+      { "tool": "move_class",          "params": { "qualifiedClassName": "org.springframework.samples.petclinic.owner.PetValidator", "targetPackage": "org.springframework.samples.petclinic.system" } }
+    ],
+    "validation": {
+      "type": "compile_and_file_exists",
+      "expectedFile": "org/springframework/samples/petclinic/system/PetValidator.java"
+    }
+  },
+  {
+    "id": "pc-rename-method-002",
+    "description": "Rename the specific two-parameter overload 'getPet(String name, boolean ignoreNew)' in class org.springframework.samples.petclinic.owner.Owner to 'findPet'. Only rename this overload, not the other getPet overloads. Update all callers.",
+    "project": "spring-petclinic",
+    "projectTag": "3.3.0",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Owner#getPet(String,boolean)" } },
+      { "tool": "rename_symbol",       "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Owner#getPet(String,boolean)", "newName": "findPet" } }
+    ],
+    "validation": {
+      "type": "compile_and_symbol_exists",
+      "expectedSymbol": "org.springframework.samples.petclinic.owner.Owner#findPet"
+    }
+  },
+  {
+    "id": "pc-change-sig-001",
+    "description": "Add a boolean parameter named 'fromController' with default value false to the method 'addPet(Pet pet)' in class org.springframework.samples.petclinic.owner.Owner. Update all call sites to pass the default value.",
+    "project": "spring-petclinic",
+    "projectTag": "3.3.0",
+    "operations": [
+      { "tool": "find_symbol_by_name", "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Owner#addPet" } },
+      { "tool": "change_signature",    "params": {
+          "qualifiedName": "org.springframework.samples.petclinic.owner.Owner#addPet",
+          "parameterChanges": [
+            { "name": "pet", "type": "Pet", "oldIndex": "0" },
+            { "name": "fromController", "type": "boolean", "defaultValue": "false" }
+          ]
+      }}
+    ],
+    "validation": {
+      "type": "compile_and_symbol_exists",
+      "expectedSymbol": "org.springframework.samples.petclinic.owner.Owner#addPet"
+    }
   }
 ]

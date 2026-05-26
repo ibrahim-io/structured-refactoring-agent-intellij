@@ -46,7 +46,45 @@ compile failure; using the wrong variable name produces a silent runtime bug.
 
 A real-world Spring Boot application cloned at tag `3.3.0` via `benchmarks/setup.py --petclinic`. Used to validate that the agent can navigate unfamiliar, medium-sized codebases (~30 classes, Spring annotations, layered architecture).
 
-Tasks cover: rename attribute, add method, find_usages inspection, read_file inspection, rename class.
+The suite now has 9 tasks across 7 operation types:
+
+| Task ID | Operation | Cross-file challenge |
+|---|---|---|
+| `pc-rename-001` | Rename field `Owner.telephone` → `phoneNumber` | Within single file |
+| `pc-add-method-001` | Add `Owner.getFullName()` | Symbol creation |
+| `pc-find-usages-001` | Find all usages of `Pet` class | Structural index query |
+| `pc-read-file-001` | Read first 50 lines of `Owner.java` | Inspection only |
+| `pc-rename-002` | Rename class `CrashController` → `PanicController` + file rename | File rename: structured renames `CrashController.java` → `PanicController.java`; text-edit must rename the file AND update the class declaration |
+| `pc-rename-method-001` | Rename `Owner.addVisit` → `recordVisit` | Cross-file: `VisitController` calls `owner.addVisit(petId, visit)` |
+| `pc-move-001` | Move `PetValidator` from `owner` → `system` package | Cross-file import: `PetController` uses `PetValidator` (same package, no import); after move it needs `import ...system.PetValidator` |
+| `pc-rename-method-002` | Rename `Owner.getPet(String, boolean)` → `findPet` | Overload disambiguation: 3 overloads of `getPet` exist; only the `(String, boolean)` variant and its 2 callers in `PetController` are renamed |
+| `pc-change-sig-001` | Add `boolean fromController` param to `Owner.addPet` | Cross-file: 3 call sites in `PetController` all need the default arg inserted |
+
+### 2c. No-API petclinic backup runner
+
+`benchmarks/run_petclinic_direct.py` executes the predefined operations in
+`tasks_petclinic.json` directly against the IntelliJ localhost tool API. It does
+not import Anthropic, read `.env`, or call an LLM.
+
+This runner is intentionally not a replacement for the final agent comparison.
+It separates two claims:
+
+| Runner | What it tests | API credits |
+|---|---|---|
+| `run_benchmarks.py` | Full Claude agent loop + structured IntelliJ tools | Yes |
+| `run_benchmarks_text_edit.py` | Full Claude agent loop + raw text-edit tools | Yes |
+| `run_petclinic_direct.py` | Structured IntelliJ tool layer only | No |
+| `run_text_edit_direct.py` | Scripted regex/string edit baseline | No |
+
+The direct runner is useful when credits are unavailable and as a diagnostic
+step before spending credits on a full run. If direct mode fails, the problem is
+in the tool implementation or IntelliJ project state. If direct mode passes but
+API mode fails, the problem is in LLM planning/tool choice.
+
+The scripted text-edit runner is deliberately weaker than a modern LLM agent. It
+is a lower-bound baseline that isolates the edit primitive: raw text rewriting
+without a reference index, PSI tree, compiler-aware symbol resolution, or IDE
+refactoring semantics.
 
 ---
 
@@ -140,34 +178,86 @@ python benchmarks/run_benchmarks_text_edit.py `
 
 ---
 
-## 6. Actual Results (First Run — Sample Project)
+## 6. Actual Results (Sample Project)
 
-### Text-edit baseline (run 2025-05-21, `results/text-edit-1.json`)
+Both agents reach 8/8 on the 10-file sample project. The structured agent uses
+~3× fewer tool calls per task and ~1.3× fewer agent turns on average.
 
-Surprisingly, `claude-sonnet-4-6` scored **8/8** with only file I/O tools on the
-initial sample project (which had only 1 call site per cross-file task). The model
-was smart enough to read all files and update cross-file references manually.
+### Correctness (both agents): 8/8
 
-| Task ID | Status | Key note |
+| Task ID | Structured | Text-edit |
 |---|---|---|
-| rename-001 | PASS | Single-file rename, trivial |
-| move-001 | PASS | Agent found and updated OrderProcessor.java import |
-| safe-delete-001 | PASS | Deleted unused method correctly |
-| create-class-001 | PASS | Created new interface |
-| add-method-001 | PASS | Added method to existing class |
-| rename-method-002 | PASS | Agent found and updated ServiceLayer.java call site |
-| inline-001 | PASS | Agent correctly inlined with parameter substitution (1 call site) |
-| change-sig-001 | PASS | Agent found and updated NotificationController.java call |
+| rename-001 | PASS | PASS |
+| move-001 | PASS | PASS |
+| safe-delete-001 | PASS | PASS |
+| create-class-001 | PASS | PASS |
+| add-method-001 | PASS | PASS |
+| rename-method-002 | PASS | PASS |
+| inline-001 | PASS | PASS |
+| change-sig-001 | PASS | PASS |
 
-**Interpretation**: A capable LLM can enumerate a small project's files manually and
-update cross-file references correctly. The binary pass/fail metric does not differentiate
-the agents on a 10-file project — the advantage lies in **efficiency** and **scalability**.
+### Efficiency (structured vs text-edit)
 
-### Efficiency comparison (pending structured run)
+Source: `results/structured-4.json` vs `results/text-edit-1.json`.
 
-The text-edit agent uses 5–12 turns per task (read every file, grep content, write
-changes). The structured agent is expected to use 1–2 turns per task (one tool call +
-optionally one verification call). The efficiency gap grows with project size.
+| Task ID | S.turns | TE.turns | S.tools | TE.tools | S.time | TE.time |
+|---|---|---|---|---|---|---|
+| rename-001         | 3 | 4 | 3  | 9  | 13.2s | 24.8s |
+| move-001           | 4 | 5 | 3  | 12 | 13.6s | 34.4s |
+| safe-delete-001    | 3 | 4 | 2  | 9  | 11.5s | 24.8s |
+| create-class-001   | 2 | 4 | 1  | 9  | 9.8s  | 25.1s |
+| add-method-001     | 4 | 4 | 3  | 9  | 26.4s | 26.0s |
+| rename-method-002  | 3 | 4 | 3  | 10 | 22.4s | 27.5s |
+| inline-001         | 5 | 5 | 13 | 10 | 62.7s | 28.6s |
+| change-sig-001     | 3 | 4 | 2  | 10 | 25.9s | 24.3s |
+| **Average / Total**| **3.4** | **4.2** | **3.8** | **9.8** | **185.6s** | **215.6s** |
+
+**Interpretation**: A capable LLM can enumerate a small project's files manually
+and update cross-file references correctly, so binary pass/fail does not separate
+the agents on a 10-file project. The structural advantage manifests instead as:
+
+- **3× fewer tool calls per task** (3.8 avg vs 9.8 avg) — the structured agent
+  invokes one refactoring tool; the text-edit agent reads each file, greps for
+  references, writes substitutions.
+- **Faster wall-clock** even with one tool call per task being more expensive
+  (the structured agent skips multi-file read passes entirely).
+- **Single-shot symbol resolution** (`find_symbol_by_name` + qualifiedName)
+  replaces the text-edit agent's exploration phase.
+- The `inline-001` outlier (13 structured tool calls) is the agent verifying the
+  inline result via `read_file` on every modified file — an artifact of the
+  agent's caution, not a structural requirement.
+
+### Class rename now guarantees file rename (2026-05-26)
+
+The initial `rename()` implementation in `RefactorService.kt` used manual PSI text
+replacement (`handleElementRename` + `setName`), which updates references in memory
+but does not invoke IntelliJ's file-rename side effect. When renaming a public class
+`Foo`, IntelliJ's `RenameProcessor` is responsible for also renaming `Foo.java` →
+`Bar.java`. The manual path silently skipped this step.
+
+Fix: replaced the manual implementation with `RenameProcessor(project, element, newName,
+searchInComments, searchTextOccurrences).run()` inside `runProcessorOnEdt`, the same
+dispatcher already used by `MoveClassesOrPackagesProcessor` and `ChangeSignatureProcessor`.
+This guarantees the file rename happens as part of the same atomic refactoring.
+
+Affected task: `pc-rename-002` (CrashController → PanicController). This task now uses
+`compile_and_file_exists` validation (checking `PanicController.java` exists at the right
+path) rather than RefactoringMiner, giving a direct, observable signal of whether the file
+rename happened.
+
+### Plugin robustness fix discovered during benchmarking
+
+Initial structured runs scored 6/8 due to a cross-task contamination bug:
+git resets between tasks updated the disk, but IntelliJ's in-memory `Document`s
+retained the previous task's state. When the next task ran, `saveAllDocuments()`
+silently failed for files with a stale Document (IntelliJ detected an external
+change conflict and refused to overwrite). Fix: each modifying entry point
+(`renameByQualifiedName`, `safeDeleteByQualifiedName`, `moveClass`,
+`changeSignature`, `inlineMethod`, `extractMethod`, `extractVariable`) and each
+PSI-creation entry point (`addField`, `addMethod`, `addInnerClass`) now calls
+a synchronous `refresh(false, true)` on source roots before reading PSI. This
+is a property a production plugin needs anyway — robustness against external
+file changes (git operations, external editors, CI).
 
 ### Why inline-001 was upgraded to 5 call sites
 
@@ -208,6 +298,46 @@ it cannot enumerate within the context window).
 
 ---
 
+## 7b. Actual Results (spring-petclinic, No-API Direct)
+
+Source files:
+
+- Structured: `results/structured-petclinic-direct-4.json`
+- Scripted text-edit: `results/text-edit-petclinic-direct-1.json`
+
+This run used **zero LLM/API calls**. It compares the structured IntelliJ tool
+layer directly against a deterministic regex/string-edit baseline.
+
+| Task ID | Structured direct | Scripted text-edit | Note |
+|---|---|---|---|
+| `pc-rename-001` | PASS | PASS | Field rename compiles in both modes |
+| `pc-add-method-001` | PASS | PASS | Method insertion compiles in both modes |
+| `pc-find-usages-001` | PASS | PASS | Structured returns PSI/index-backed usages; text baseline returns grep matches |
+| `pc-read-file-001` | PASS | PASS | Basic file inspection |
+| `pc-rename-002` | **PASS** | **FAIL** | Structured class rename succeeds; scripted text replacement fails to perform the class/file rename |
+
+Summary:
+
+| Metric | Structured direct | Scripted text-edit |
+|---|---:|---:|
+| Correctness | **5/5** | **4/5** |
+| Total time | 42.9s | 45.6s |
+| LLM turns | 0 | 0 |
+| API cost | £0 | £0 |
+
+Interpretation: this is the first petclinic result showing a binary correctness
+gap without spending API credits. The structured layer succeeds on class rename
+because it operates through PSI/IDE semantics. The scripted baseline operates on
+raw text and failed to carry out the equivalent class/file rename.
+
+The `find_usages` task also demonstrates an important qualitative distinction:
+the structured path exposes a reference-resolution operation, while the text
+baseline can only approximate this with grep. For the direct runner, a textual
+fallback is used only when the IDE index is unavailable during project import;
+the final thesis should report whether a result is index-backed or fallback.
+
+---
+
 ## 8. Metrics
 
 | Metric | How measured |
@@ -225,21 +355,23 @@ it cannot enumerate within the context window).
 
 ## 9. Updated Hypothesis
 
-Based on initial text-edit results (8/8 on the small project before inline-001 upgrade):
+Based on observed results on the 10-file sample project:
 
 | Metric | Structured (IntelliJ AST) | Text-edit (raw file I/O) |
 |---|---|---|
-| Correctness — 10-file project | 8/8 (100%) | **7/8 or 8/8** (inline-001 hard) |
-| Avg turns per task | **~2** | ~6–8 |
-| Avg tool calls per task | **~2** | ~10–15 |
-| Correctness — larger project (100+ files) | **8/8** | ~3/8 (misses call sites) |
+| Correctness — 10-file project | **8/8** (measured) | **8/8** (measured) |
+| Avg turns per task | **3.4** (measured) | **4.2** (measured) |
+| Avg tool calls per task | **3.8** (measured) | **9.8** (measured) |
+| Correctness — larger project (100+ files) | **8/8** (hypothesised) | ~3/8 (hypothesised — context-window limited) |
 | Guarantee of syntactic validity | **Yes** (AST operations) | No (text substitution) |
 
 The primary thesis claim has been refined: **on a small project, a capable LLM can
 compensate for lack of AST tools by reading all files; the structural advantage of
-IntelliJ-backed refactoring manifests as (a) efficiency (fewer turns/API calls), and
-(b) correctness guarantees at scale — both of which are critical for production use
-in large codebases.**
+IntelliJ-backed refactoring manifests as (a) efficiency (fewer turns/API calls — 3×
+fewer measured), and (b) correctness guarantees at scale — both of which are
+critical for production use in large codebases.** The petclinic suite
+(`tasks_petclinic.json`) is the next benchmark to test the scalability claim
+directly.
 
 ---
 

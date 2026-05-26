@@ -50,6 +50,23 @@ tasks {
         sourceCompatibility = "21"
         targetCompatibility = "21"
     }
+
+    runIde {
+        // Auto-open a benchmark project when the sandbox IDE launches.
+        // Override with:
+        //   .\gradlew.bat runIde -PbenchmarkProject=spring-petclinic
+        // or:
+        //   BENCHMARK_PROJECT=spring-petclinic ./gradlew runIde
+        val benchmarkProject =
+            providers.gradleProperty("benchmarkProject").orNull
+                ?: providers.environmentVariable("BENCHMARK_PROJECT").orNull
+                ?: "sample-java-project"
+        val projectPath = file("benchmarks/projects/$benchmarkProject").absolutePath
+        args(projectPath)
+        jvmArgumentProviders.add(CommandLineArgumentProvider {
+            listOf("-Didea.project.path=$projectPath")
+        })
+    }
 }
 
 kotlin {

@@ -30,6 +30,7 @@ class PsiCreationService(private val project: Project) {
     // ── Members on existing classes ──────────────────────────────────────────
 
     fun addField(filePath: String, className: String?, fieldText: String): Result {
+        refreshFromDisk(filePath)
         val cls = ReadAction.compute<PsiClass?, RuntimeException> { findClass(filePath, className) }
             ?: return Result.Err("Class '${className ?: "<first>"}' not found in $filePath")
         val factory = JavaPsiFacade.getElementFactory(project)
@@ -42,6 +43,7 @@ class PsiCreationService(private val project: Project) {
     }
 
     fun addMethod(filePath: String, className: String?, methodText: String): Result {
+        refreshFromDisk(filePath)
         val cls = ReadAction.compute<PsiClass?, RuntimeException> { findClass(filePath, className) }
             ?: return Result.Err("Class '${className ?: "<first>"}' not found in $filePath")
         val factory = JavaPsiFacade.getElementFactory(project)
@@ -54,6 +56,7 @@ class PsiCreationService(private val project: Project) {
     }
 
     fun addInnerClass(filePath: String, outerClassName: String?, innerClassText: String): Result {
+        refreshFromDisk(filePath)
         val outer = ReadAction.compute<PsiClass?, RuntimeException> { findClass(filePath, outerClassName) }
             ?: return Result.Err("Class '${outerClassName ?: "<first>"}' not found in $filePath")
         val factory = JavaPsiFacade.getElementFactory(project)
@@ -111,6 +114,18 @@ class PsiCreationService(private val project: Project) {
         }
         // Fallback: find via JavaPsiFacade (covers multi-module projects)
         return JavaPsiFacade.getInstance(project).findPackage(packageName)?.directories?.firstOrNull()
+    }
+
+    /** Force-sync a VirtualFile from disk before writing.
+     * After git reset or other external changes IntelliJ may have a queued
+     * "file changed externally" reload event. Refreshing synchronously first
+     * resolves the conflict, so our write is a clean modification and
+     * saveAllDocuments() actually persists it. */
+    private fun refreshFromDisk(filePath: String) {
+        val vf = LocalFileSystem.getInstance().findFileByPath(filePath) ?: return
+        ApplicationManager.getApplication().invokeAndWait {
+            vf.refresh(false, false)
+        }
     }
 
     private fun shortenAndReformat(element: com.intellij.psi.PsiElement) {

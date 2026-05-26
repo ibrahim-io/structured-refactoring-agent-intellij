@@ -37,6 +37,12 @@ import argparse
 import subprocess
 import requests
 import anthropic
+
+try:
+    import openai as _openai_mod
+    HAS_OPENAI = True
+except ImportError:
+    HAS_OPENAI = False
 from pathlib import Path
 
 # Load .env from repo root if present
@@ -51,6 +57,23 @@ if _env.exists():
 TOOL_SCHEMA_URL = "http://127.0.0.1:{port}/tools/schema"
 TOOL_CALL_URL   = "http://127.0.0.1:{port}/tools"
 STATUS_URL      = "http://127.0.0.1:{port}/status"
+
+
+# ── Schema conversion ────────────────────────────────────────────────────────
+
+def anthropic_to_openai_tools(tools: list) -> list:
+    """Convert Anthropic tool schema format to OpenAI function-calling format."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
+            },
+        }
+        for t in tools
+    ]
 
 
 # ── Agent interaction ────────────────────────────────────────────────────────
@@ -129,6 +152,78 @@ def run_task_with_agent(task: dict, port: int, api_key: str,
     return {"tool_calls": tool_calls_made, "turns": turns}
 
 
+def run_task_with_agent_openai(task: dict, port: int, api_key: str,
+                               model: str = "gpt-4o",
+                               max_turns: int = 12) -> dict:
+    """Drive an OpenAI model with the structured IntelliJ tool API."""
+    if not HAS_OPENAI:
+        raise RuntimeError("openai package not installed. Run: pip install openai")
+
+    schema_r = requests.get(TOOL_SCHEMA_URL.format(port=port), timeout=5)
+    tools = anthropic_to_openai_tools(schema_r.json())
+
+    status = requests.get(STATUS_URL.format(port=port), timeout=5).json()
+    system_prompt = (
+        "You are an expert software engineering assistant. "
+        f"You are connected to an IntelliJ project called '{status.get('project', '?')}' "
+        f"via a structured refactoring tool API on port {port}. "
+        "Use find_symbol_by_name to locate symbols before operating on them. "
+        "Use read_file to inspect source code before adding or modifying members. "
+        "Use find_usages to check impact before renaming or deleting. "
+        "Always use qualifiedName parameters instead of filePath+offset when possible."
+    )
+
+    client = _openai_mod.OpenAI(api_key=api_key)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": task["description"]},
+    ]
+    tool_calls_made = []
+    turns = 0
+
+    while turns < max_turns:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+        )
+        turns += 1
+
+        msg = response.choices[0].message
+        # Append assistant turn (with tool_calls if present)
+        assistant_entry = {"role": "assistant", "content": msg.content}
+        if msg.tool_calls:
+            assistant_entry["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in msg.tool_calls
+            ]
+        messages.append(assistant_entry)
+
+        if not msg.tool_calls:
+            break
+
+        for tc in msg.tool_calls:
+            params = json.loads(tc.function.arguments)
+            result = call_tool(port, tc.function.name, params)
+            tool_calls_made.append({
+                "tool": tc.function.name,
+                "params": params,
+                "result": result,
+            })
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(result),
+            })
+
+    return {"tool_calls": tool_calls_made, "turns": turns}
+
+
 # ── Validation helpers ───────────────────────────────────────────────────────
 
 def run_maven_compile(project_dir: Path) -> dict:
@@ -136,7 +231,7 @@ def run_maven_compile(project_dir: Path) -> dict:
     try:
         mvn = "mvn.cmd" if sys.platform == "win32" else "mvn"
         result = subprocess.run(
-            [mvn, "compile", "-q", "--no-transfer-progress"],
+            [mvn, "-Dcheckstyle.skip=true", "-Dspring-javaformat.skip=true", "compile", "-q", "--no-transfer-progress"],
             cwd=project_dir,
             capture_output=True,
             text=True,
@@ -144,7 +239,7 @@ def run_maven_compile(project_dir: Path) -> dict:
         )
         if result.returncode == 0:
             return {"ok": True}
-        err = (result.stderr or result.stdout or "")[-2000:]
+        err = ((result.stdout or "") + "\n" + (result.stderr or ""))[-4000:]
         return {"ok": False, "error": err}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -317,6 +412,31 @@ def validate(
     else:
         notes.append(f"All expected tools called: {expected_tools}")
 
+    # Non-compile validation types — handle here and return early
+    if vtype == "find_usages_non_empty":
+        find_calls = [c for c in agent_result["tool_calls"] if c["tool"] == "find_usages"]
+        if not find_calls:
+            passed = False
+            notes.append("find_usages was not called")
+        else:
+            last = find_calls[-1]["result"]
+            count = last.get("count", 0) if isinstance(last, dict) else 0
+            if count <= 0:
+                passed = False
+                notes.append(f"find_usages returned no usages (count={count})")
+            else:
+                notes.append(f"find_usages returned {count} usage(s)")
+        return {"passed": passed, "notes": notes, "validation_type": vtype}
+
+    if vtype == "tool_called":
+        expected = validation.get("expectedTool", "")
+        if expected and expected in actual_tools:
+            notes.append(f"Tool '{expected}' was called")
+        elif expected:
+            passed = False
+            notes.append(f"Tool '{expected}' was NOT called")
+        return {"passed": passed, "notes": notes, "validation_type": vtype}
+
     if not vtype.startswith("compile"):
         return {"passed": passed, "notes": notes, "validation_type": vtype}
 
@@ -330,7 +450,7 @@ def validate(
             notes.append("Compile: PASS")
         else:
             passed = False
-            err_snippet = cr["error"][:300].replace("\n", " ")
+            err_snippet = cr["error"][-800:].replace("\n", " ")
             notes.append(f"Compile: FAIL -- {err_snippet}")
     else:
         notes.append(f"Compile: skipped (project dir not found: {project_dir})")
@@ -442,8 +562,12 @@ def main():
     )
     parser.add_argument("--tasks",        default="benchmarks/tasks.json")
     parser.add_argument("--agent-port",   type=int, default=6473)
-    parser.add_argument("--api-key",      default=os.environ.get("ANTHROPIC_API_KEY", ""), help="Anthropic API key (defaults to ANTHROPIC_API_KEY env var or .env)")
-    parser.add_argument("--model",        default="claude-sonnet-4-6")
+    parser.add_argument("--provider",     default="anthropic", choices=["anthropic", "openai"],
+                        help="LLM provider to use (anthropic or openai)")
+    parser.add_argument("--api-key",      default="",
+                        help="API key (defaults to ANTHROPIC_API_KEY or OPENAI_API_KEY env var)")
+    parser.add_argument("--model",        default="",
+                        help="Model name (default: claude-sonnet-4-6 for anthropic, gpt-4o for openai)")
     parser.add_argument("--max-turns",    type=int, default=12)
     parser.add_argument("--out",          default="results/run.json")
     parser.add_argument("--task-id",      help="Run a single task by ID")
@@ -457,8 +581,17 @@ def main():
     )
     args = parser.parse_args()
 
-    if not args.api_key:
-        print("ERROR: No API key. Set ANTHROPIC_API_KEY, use --api-key, or add it to .env")
+    # Resolve API key and default model from provider
+    if args.provider == "openai":
+        api_key = args.api_key or os.environ.get("OPENAI_API_KEY", "")
+        model   = args.model or "gpt-4o"
+    else:
+        api_key = args.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        model   = args.model or "claude-sonnet-4-6"
+
+    if not api_key:
+        env_var = "OPENAI_API_KEY" if args.provider == "openai" else "ANTHROPIC_API_KEY"
+        print(f"ERROR: No API key. Set {env_var} or use --api-key")
         sys.exit(1)
 
     if not check_server(args.agent_port):
@@ -500,10 +633,16 @@ def main():
 
         t0 = time.time()
         try:
-            agent_result = run_task_with_agent(
-                task, args.agent_port, args.api_key,
-                model=args.model, max_turns=args.max_turns,
-            )
+            if args.provider == "openai":
+                agent_result = run_task_with_agent_openai(
+                    task, args.agent_port, api_key,
+                    model=model, max_turns=args.max_turns,
+                )
+            else:
+                agent_result = run_task_with_agent(
+                    task, args.agent_port, api_key,
+                    model=model, max_turns=args.max_turns,
+                )
 
             # Commit the post-task state so RefactoringMiner can diff the two commits
             if project_dir and project_dir.exists():
@@ -543,6 +682,8 @@ def main():
     output = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "agent": "structured",
+        "provider": args.provider,
+        "model": model,
         "tasks": results,
     }
     Path(args.out).write_text(json.dumps(output, indent=2), encoding="utf-8")
