@@ -31,6 +31,12 @@ PETCLINIC_SHA_FILE = PROJECTS_DIR / "spring-petclinic.sha"
 
 SAMPLE_PROJECT_DIR = PROJECTS_DIR / "sample-java-project"
 
+# Apache Commons Lang — larger, real-world second project (246 source files) used as
+# the scale / external-validity benchmark. Ships semantic release tags.
+COMMONS_LANG_REPO = "https://github.com/apache/commons-lang.git"
+COMMONS_LANG_TAG  = "rel/commons-lang-3.14.0"
+COMMONS_LANG_DIR  = PROJECTS_DIR / "commons-lang"
+
 
 def check_sample_project() -> bool:
     """Verify the bundled sample project has all required source files."""
@@ -79,15 +85,41 @@ def clone_petclinic() -> bool:
     return True
 
 
+def clone_commons_lang() -> bool:
+    """Clone Apache Commons Lang at a pinned release tag (the larger, real-world
+    second project used for the scale / external-validity benchmark)."""
+    if COMMONS_LANG_DIR.exists():
+        print(f"[OK] commons-lang already present at {COMMONS_LANG_DIR}")
+        return True
+    print(f"Cloning Apache Commons Lang {COMMONS_LANG_TAG} ...")
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        ["git", "clone", "--depth", "1", "--branch", COMMONS_LANG_TAG,
+         COMMONS_LANG_REPO, str(COMMONS_LANG_DIR)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"[ERROR] git clone failed:\n{result.stderr}")
+        return False
+    print(f"[OK] commons-lang cloned to {COMMONS_LANG_DIR}")
+    print("     Open it in the sandbox IntelliJ (Maven), let the import finish, then run")
+    print("     run_petclinic_direct.py --tasks benchmarks/tasks_commons_lang.json --allow-project-mismatch")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Set up structured-refactoring-agent benchmark projects")
     parser.add_argument("--petclinic", action="store_true", help="Also clone spring-petclinic")
+    parser.add_argument("--commons-lang", action="store_true", help="Also clone Apache Commons Lang (larger second project)")
     args = parser.parse_args()
 
     ok = check_sample_project()
 
     if args.petclinic:
         ok = clone_petclinic() and ok
+
+    if args.commons_lang:
+        ok = clone_commons_lang() and ok
 
     if not ok:
         print("\nSome checks failed — see warnings above.")

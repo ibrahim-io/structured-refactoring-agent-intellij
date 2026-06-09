@@ -1,0 +1,83 @@
+[
+  {
+    "id": "cl-rename-field-001",
+    "description": "Rename the field 'calendar' in class org.apache.commons.lang3.time.CalendarUtils to 'wrappedCalendar'. Update all references.",
+    "project": "commons-lang",
+    "projectTag": "rel/commons-lang-3.14.0",
+    "operations": [
+      {
+        "tool": "find_symbol_by_name",
+        "params": { "qualifiedName": "org.apache.commons.lang3.time.CalendarUtils#calendar" }
+      },
+      {
+        "tool": "rename_symbol",
+        "params": { "qualifiedName": "org.apache.commons.lang3.time.CalendarUtils#calendar", "newName": "wrappedCalendar" }
+      }
+    ],
+    "validation": {
+      "type": "compile_and_symbol_exists",
+      "expectedSymbol": "org.apache.commons.lang3.time.CalendarUtils#wrappedCalendar"
+    }
+  },
+  {
+    "id": "cl-rename-overload-001",
+    "description": "Rename ONLY the three-argument overload 'replace(String text, String searchString, String replacement)' in class org.apache.commons.lang3.StringUtils to 'replaceSimple'. Do not rename the other replace overloads (e.g. the four-argument one with int max). Update all callers of the three-argument overload.",
+    "project": "commons-lang",
+    "projectTag": "rel/commons-lang-3.14.0",
+    "operations": [
+      {
+        "tool": "find_symbol_by_name",
+        "params": { "qualifiedName": "org.apache.commons.lang3.StringUtils#replace(String,String,String)" }
+      },
+      {
+        "tool": "rename_symbol",
+        "params": { "qualifiedName": "org.apache.commons.lang3.StringUtils#replace(String,String,String)", "newName": "replaceSimple" }
+      }
+    ],
+    "validation": {
+      "type": "compile_and_symbol_exists",
+      "expectedSymbol": "org.apache.commons.lang3.StringUtils#replaceSimple",
+      "survivingSymbol": "org.apache.commons.lang3.StringUtils#replace",
+      "note": "Overload disambiguation: the other replace overloads (replace(...,int max), replace ignore-case, etc.) must keep the name 'replace'. A word-level text substitution of 'replace' also corrupts java.lang.String#replace calls and fails to compile."
+    }
+  },
+  {
+    "id": "cl-rename-cross-class-001",
+    "description": "Rename the method 'contains(int[] array, int valueToFind)' in class org.apache.commons.lang3.ArrayUtils to 'containsValue'. A method named 'contains' also exists on org.apache.commons.lang3.StringUtils; that one must NOT be renamed. Update all callers of ArrayUtils.contains(int[], int).",
+    "project": "commons-lang",
+    "projectTag": "rel/commons-lang-3.14.0",
+    "operations": [
+      {
+        "tool": "find_symbol_by_name",
+        "params": { "qualifiedName": "org.apache.commons.lang3.ArrayUtils#contains(int[],int)" }
+      },
+      {
+        "tool": "rename_symbol",
+        "params": { "qualifiedName": "org.apache.commons.lang3.ArrayUtils#contains(int[],int)", "newName": "containsValue" }
+      }
+    ],
+    "validation": {
+      "type": "compile_and_symbol_exists",
+      "expectedSymbol": "org.apache.commons.lang3.ArrayUtils#containsValue",
+      "survivingSymbol": "org.apache.commons.lang3.StringUtils#contains",
+      "note": "Cross-class collision: StringUtils.contains and other ArrayUtils.contains overloads must keep the name 'contains'. A word-level substitution of 'contains' also corrupts JDK calls (List#contains, String#contains) and fails to compile."
+    }
+  },
+  {
+    "id": "cl-find-usages-001",
+    "description": "Find all usages of the class org.apache.commons.lang3.CharRange and report how many references exist across the project.",
+    "project": "commons-lang",
+    "projectTag": "rel/commons-lang-3.14.0",
+    "operations": [
+      {
+        "tool": "find_symbol_by_name",
+        "params": { "qualifiedName": "org.apache.commons.lang3.CharRange" }
+      },
+      {
+        "tool": "find_usages",
+        "params": { "qualifiedName": "org.apache.commons.lang3.CharRange" }
+      }
+    ],
+    "validation": { "type": "find_usages_non_empty" }
+  }
+]
