@@ -166,7 +166,20 @@ class ToolsHandler(private val project: Project) : HttpHandler {
                 memberQualifiedName = params.getString("memberQualifiedName"),
             ).toJson()
 
+            "make_method_static" -> refactor.makeMethodStatic(
+                methodQualifiedName = params.getString("methodQualifiedName"),
+            ).toJson()
+
+            "migrate_type" -> refactor.migrateType(
+                elementQualifiedName = params.getString("elementQualifiedName"),
+                newTypeText = params.getString("newType"),
+            ).toJson()
+
             // ── Inline tools ─────────────────────────────────────────────────
+            "inline_field" -> refactor.inlineField(
+                fieldQualifiedName = params.getString("fieldQualifiedName"),
+            ).toJson()
+
             "inline_method" -> refactor.inlineMethod(
                 qualifiedName  = params.getString("qualifiedName"),
                 deleteOriginal = params.optBoolean("deleteOriginal", true),

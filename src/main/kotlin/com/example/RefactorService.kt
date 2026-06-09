@@ -49,6 +49,13 @@ import com.intellij.refactoring.memberPushDown.PushDownProcessor
 import com.intellij.refactoring.util.classMembers.MemberInfo
 import com.intellij.refactoring.util.DocCommentPolicy
 import com.intellij.psi.PsiMember
+import com.intellij.psi.PsiField
+import com.intellij.psi.PsiType
+import com.intellij.refactoring.makeStatic.MakeMethodStaticProcessor
+import com.intellij.refactoring.makeStatic.Settings
+import com.intellij.refactoring.inline.InlineConstantFieldProcessor
+import com.intellij.refactoring.typeMigration.TypeMigrationProcessor
+import com.intellij.refactoring.typeMigration.TypeMigrationRules
 import com.intellij.refactoring.safeDelete.SafeDeleteProcessor
 import org.jetbrains.kotlin.psi.KtClass
 import org.jetbrains.kotlin.psi.KtFile
@@ -472,6 +479,67 @@ class RefactorService(private val project: Project) {
             processor.setPreviewUsages(false)
             BaseRefactoringProcessor.ConflictsInTestsException.withIgnoredConflicts<RuntimeException> { processor.run() }
             Result.Ok("pushed down '$memberName' from '$sourceName'")
+        }
+    }
+
+    // ── Make Static / Inline Field / Type Migration ───────────────────────────
+
+    /** Make an instance method static (settings: replace usages, no captured fields). */
+    fun makeMethodStatic(methodQualifiedName: String): Result {
+        refreshProjectFromDisk()
+        DumbService.getInstance(project).waitForSmartMode()
+        val method = ReadAction.compute<PsiMethod?, RuntimeException> {
+            resolveQualifiedName(methodQualifiedName) as? PsiMethod
+        } ?: return Result.Err("could not resolve method \"$methodQualifiedName\"")
+        val name = ReadAction.compute<String, RuntimeException> { method.name }
+        return runProcessorOnEdt {
+            val settings = Settings(true, null, null)
+            val processor = MakeMethodStaticProcessor(project, method, settings)
+            processor.setPreviewUsages(false)
+            BaseRefactoringProcessor.ConflictsInTestsException.withIgnoredConflicts<RuntimeException> { processor.run() }
+            Result.Ok("made method '$name' static")
+        }
+    }
+
+    /** Inline a constant (static final) field: replace every reference with its value and delete it. */
+    fun inlineField(fieldQualifiedName: String): Result {
+        refreshProjectFromDisk()
+        DumbService.getInstance(project).waitForSmartMode()
+        val field = ReadAction.compute<PsiField?, RuntimeException> {
+            resolveQualifiedName(fieldQualifiedName) as? PsiField
+        } ?: return Result.Err("could not resolve field \"$fieldQualifiedName\"")
+        val name = ReadAction.compute<String, RuntimeException> { field.name ?: "<field>" }
+        return runProcessorOnEdt {
+            val processor = InlineConstantFieldProcessor(field, project, null, false)
+            processor.setPreviewUsages(false)
+            BaseRefactoringProcessor.ConflictsInTestsException.withIgnoredConflicts<RuntimeException> { processor.run() }
+            Result.Ok("inlined constant field '$name'")
+        }
+    }
+
+    /**
+     * Change the type of a field/variable/method (by qualified name) to [newTypeText] and
+     * propagate the change through all usages via IntelliJ's TypeMigration engine. No text
+     * approach can do this safely.
+     */
+    fun migrateType(elementQualifiedName: String, newTypeText: String): Result {
+        refreshProjectFromDisk()
+        DumbService.getInstance(project).waitForSmartMode()
+        val element = ReadAction.compute<PsiElement?, RuntimeException> {
+            resolveQualifiedName(elementQualifiedName)
+        } ?: return Result.Err("could not resolve \"$elementQualifiedName\"")
+        val newType = ReadAction.compute<PsiType?, RuntimeException> {
+            runCatching { JavaPsiFacade.getElementFactory(project).createTypeFromText(newTypeText, element) }.getOrNull()
+        } ?: return Result.Err("could not parse type \"$newTypeText\"")
+        return runProcessorOnEdt {
+            val rules = TypeMigrationRules(project)
+            val processor = TypeMigrationProcessor(
+                project, arrayOf(element),
+                com.intellij.util.Functions.constant(newType), rules, true,
+            )
+            processor.setPreviewUsages(false)
+            BaseRefactoringProcessor.ConflictsInTestsException.withIgnoredConflicts<RuntimeException> { processor.run() }
+            Result.Ok("migrated type of '$elementQualifiedName' to '$newTypeText'")
         }
     }
 

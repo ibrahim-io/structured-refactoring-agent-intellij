@@ -198,6 +198,40 @@ class SchemaHandler : HttpHandler {
             }
           },
           {
+            "name": "make_method_static",
+            "description": "Make an instance method static, using IntelliJ's MakeMethodStaticProcessor; all call sites are updated. Best for methods that do not capture instance state.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "methodQualifiedName": { "type": "string", "description": "Qualified name of the method, e.g. 'com.example.Foo#helper' or 'com.example.Foo#helper(int)'." }
+              },
+              "required": ["methodQualifiedName"]
+            }
+          },
+          {
+            "name": "migrate_type",
+            "description": "Change the declared type of a field, variable, or method return (by qualified name) to a new type and propagate the change through ALL usages, using IntelliJ's TypeMigration engine. Handles casts, generics, and dependent declarations that a text substitution cannot.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "elementQualifiedName": { "type": "string", "description": "Qualified name of the field/method to migrate, e.g. 'com.example.Foo#items' or 'com.example.Foo#getItems'." },
+                "newType":              { "type": "string", "description": "New type text, e.g. 'java.util.List<String>', 'long', 'CharSequence'." }
+              },
+              "required": ["elementQualifiedName", "newType"]
+            }
+          },
+          {
+            "name": "inline_field",
+            "description": "Inline a constant (static final) field: replace every reference with the field's value and delete the declaration, using IntelliJ's InlineConstantFieldProcessor.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "fieldQualifiedName": { "type": "string", "description": "Qualified name of the constant field, e.g. 'com.example.Foo#MAX_SIZE'." }
+              },
+              "required": ["fieldQualifiedName"]
+            }
+          },
+          {
             "name": "inline_method",
             "description": "Inline a Java method: replace every call site with the method body (with correct parameter substitution) and optionally delete the original declaration. Uses IntelliJ's InlineMethodProcessor, which handles edge cases such as parameter shadowing, complex expressions, and multiple return paths that text-edit approaches cannot do reliably.",
             "input_schema": {
