@@ -156,6 +156,16 @@ class ToolsHandler(private val project: Project) : HttpHandler {
                 ).toJson()
             }
 
+            // ── Hierarchy / design tools ─────────────────────────────────────
+            "pull_up_member" -> refactor.pullUpMember(
+                memberQualifiedName = params.getString("memberQualifiedName"),
+                targetSuperClass = params.optString("targetSuperClass").takeIf { it.isNotEmpty() },
+            ).toJson()
+
+            "push_down_member" -> refactor.pushDownMember(
+                memberQualifiedName = params.getString("memberQualifiedName"),
+            ).toJson()
+
             // ── Inline tools ─────────────────────────────────────────────────
             "inline_method" -> refactor.inlineMethod(
                 qualifiedName  = params.getString("qualifiedName"),

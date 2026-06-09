@@ -175,6 +175,29 @@ class SchemaHandler : HttpHandler {
             }
           },
           {
+            "name": "pull_up_member",
+            "description": "Pull a member (method or field) UP from its declaring class to a superclass, using IntelliJ's PullUpProcessor. A high-level design refactoring made correct-by-construction: the member is moved, and overrides, references, and required imports are handled across the type hierarchy. Defaults to the direct superclass when targetSuperClass is omitted.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "memberQualifiedName": { "type": "string", "description": "Qualified name of the member to pull up, e.g. 'com.example.Dog#makeSound' or 'com.example.Dog#legs'." },
+                "targetSuperClass":    { "type": "string", "description": "Fully qualified name of the destination superclass. Omit to use the direct (non-Object) superclass." }
+              },
+              "required": ["memberQualifiedName"]
+            }
+          },
+          {
+            "name": "push_down_member",
+            "description": "Push a member (method or field) DOWN from its declaring class into its subclasses, using IntelliJ's PushDownProcessor. The inverse of pull_up_member: the member is copied into each subclass and removed from the parent, with references handled across the hierarchy.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "memberQualifiedName": { "type": "string", "description": "Qualified name of the member to push down, e.g. 'com.example.Animal#makeSound'." }
+              },
+              "required": ["memberQualifiedName"]
+            }
+          },
+          {
             "name": "inline_method",
             "description": "Inline a Java method: replace every call site with the method body (with correct parameter substitution) and optionally delete the original declaration. Uses IntelliJ's InlineMethodProcessor, which handles edge cases such as parameter shadowing, complex expressions, and multiple return paths that text-edit approaches cannot do reliably.",
             "input_schema": {

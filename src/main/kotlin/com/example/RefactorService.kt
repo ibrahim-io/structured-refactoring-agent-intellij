@@ -44,6 +44,11 @@ import com.intellij.refactoring.move.moveClassesOrPackages.MoveClassesOrPackages
 import com.intellij.refactoring.move.moveClassesOrPackages.SingleSourceRootMoveDestination
 import com.intellij.refactoring.BaseRefactoringProcessor
 import com.intellij.refactoring.rename.RenameProcessor
+import com.intellij.refactoring.memberPullUp.PullUpProcessor
+import com.intellij.refactoring.memberPushDown.PushDownProcessor
+import com.intellij.refactoring.util.classMembers.MemberInfo
+import com.intellij.refactoring.util.DocCommentPolicy
+import com.intellij.psi.PsiMember
 import com.intellij.refactoring.safeDelete.SafeDeleteProcessor
 import org.jetbrains.kotlin.psi.KtClass
 import org.jetbrains.kotlin.psi.KtFile
@@ -412,6 +417,61 @@ class RefactorService(private val project: Project) {
             // See moveClass(): proceed past suppressed-and-thrown conflicts.
             BaseRefactoringProcessor.ConflictsInTestsException.withIgnoredConflicts<RuntimeException> { processor.run() }
             Result.Ok("Changed signature of '${method.name}'")
+        }
+    }
+
+    // ── Pull Up / Push Down member (high-level design refactorings) ────────────
+
+    /**
+     * Pull a member (method or field) UP from its declaring class to a superclass.
+     * [targetSuperClass] defaults to the direct (non-Object) superclass. This is one
+     * of the high-level design refactorings that text-editing agents typically avoid,
+     * here made correct-by-construction via IntelliJ's PullUpProcessor.
+     */
+    fun pullUpMember(memberQualifiedName: String, targetSuperClass: String? = null): Result {
+        refreshProjectFromDisk()
+        DumbService.getInstance(project).waitForSmartMode()
+        val member = ReadAction.compute<PsiMember?, RuntimeException> {
+            resolveQualifiedName(memberQualifiedName) as? PsiMember
+        } ?: return Result.Err("could not resolve member \"$memberQualifiedName\"")
+        val sourceClass = ReadAction.compute<PsiClass?, RuntimeException> { member.containingClass }
+            ?: return Result.Err("member \"$memberQualifiedName\" has no containing class")
+        val superClass = ReadAction.compute<PsiClass?, RuntimeException> {
+            if (targetSuperClass != null) resolveClassByQualifiedName(targetSuperClass)
+            else sourceClass.superClass?.takeIf { it.qualifiedName != "java.lang.Object" }
+        } ?: return Result.Err("no target superclass (pass targetSuperClass, or ensure a non-Object superclass exists)")
+        val (memberName, superName) = ReadAction.compute<Pair<String, String>, RuntimeException> {
+            ((member as? PsiNamedElement)?.name ?: "<member>") to (superClass.qualifiedName ?: superClass.name ?: "?")
+        }
+        return runProcessorOnEdt {
+            val info = MemberInfo(member).apply { isChecked = true }
+            val processor = PullUpProcessor(sourceClass, superClass, arrayOf(info), DocCommentPolicy(DocCommentPolicy.ASIS))
+            processor.setPreviewUsages(false)
+            BaseRefactoringProcessor.ConflictsInTestsException.withIgnoredConflicts<RuntimeException> { processor.run() }
+            Result.Ok("pulled up '$memberName' to '$superName'")
+        }
+    }
+
+    /**
+     * Push a member (method or field) DOWN from its declaring class to its subclasses.
+     */
+    fun pushDownMember(memberQualifiedName: String): Result {
+        refreshProjectFromDisk()
+        DumbService.getInstance(project).waitForSmartMode()
+        val member = ReadAction.compute<PsiMember?, RuntimeException> {
+            resolveQualifiedName(memberQualifiedName) as? PsiMember
+        } ?: return Result.Err("could not resolve member \"$memberQualifiedName\"")
+        val sourceClass = ReadAction.compute<PsiClass?, RuntimeException> { member.containingClass }
+            ?: return Result.Err("member \"$memberQualifiedName\" has no containing class")
+        val (memberName, sourceName) = ReadAction.compute<Pair<String, String>, RuntimeException> {
+            ((member as? PsiNamedElement)?.name ?: "<member>") to (sourceClass.qualifiedName ?: sourceClass.name ?: "?")
+        }
+        return runProcessorOnEdt {
+            val info = MemberInfo(member).apply { isChecked = true }
+            val processor = PushDownProcessor(sourceClass, listOf(info), DocCommentPolicy(DocCommentPolicy.ASIS))
+            processor.setPreviewUsages(false)
+            BaseRefactoringProcessor.ConflictsInTestsException.withIgnoredConflicts<RuntimeException> { processor.run() }
+            Result.Ok("pushed down '$memberName' from '$sourceName'")
         }
     }
 
