@@ -64,7 +64,18 @@ tasks {
         val projectPath = file("benchmarks/projects/$benchmarkProject").absolutePath
         args(projectPath)
         jvmArgumentProviders.add(CommandLineArgumentProvider {
-            listOf("-Didea.project.path=$projectPath")
+            listOf(
+                "-Didea.project.path=$projectPath",
+                // Make IntelliJ's refactoring engine non-interactive in this unattended
+                // agent sandbox. Verified against build 251 bytecode: BaseRefactoringProcessor
+                // routes the usage-preview pane, the conflicts ("Problems Detected") dialog,
+                // and RenameProcessor's automatic-renaming dialog through their non-UI code
+                // paths when this JVM system property is set (it is read via Boolean.getBoolean,
+                // so it must be a -D flag, not an in-IDE Registry key). Conflicts then surface
+                // as a catchable ConflictsInTestsException instead of a modal dialog that would
+                // block the EDT forever with no user to click it.
+                "-Dide.performance.skip.refactoring.dialogs=true",
+            )
         })
     }
 }

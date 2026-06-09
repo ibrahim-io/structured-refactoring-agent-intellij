@@ -42,6 +42,7 @@ import com.intellij.refactoring.changeSignature.ParameterInfoImpl
 import com.intellij.refactoring.util.CanonicalTypes
 import com.intellij.refactoring.move.moveClassesOrPackages.MoveClassesOrPackagesProcessor
 import com.intellij.refactoring.move.moveClassesOrPackages.SingleSourceRootMoveDestination
+import com.intellij.refactoring.BaseRefactoringProcessor
 import com.intellij.refactoring.rename.RenameProcessor
 import com.intellij.refactoring.safeDelete.SafeDeleteProcessor
 import org.jetbrains.kotlin.psi.KtClass
@@ -207,8 +208,11 @@ class RefactorService(private val project: Project) {
         // the containing .java file when a public class is renamed — the manual approach
         // (setName + handleElementRename) does not trigger the file rename.
         return runProcessorOnEdt {
-            val processor = RenameProcessor(project, element, newName, searchInComments, searchTextOccurrences)
-            processor.setPreviewUsages(false)
+            // Headless: HeadlessRenameProcessor suppresses BOTH the usage preview pane
+            // and the modal conflicts dialog (either would block the EDT forever in an
+            // unattended IDE and wedge every subsequent operation), recording any
+            // conflicts instead of prompting. See HeadlessRenameProcessor.java.
+            val processor = HeadlessRenameProcessor(project, element, newName, searchInComments, searchTextOccurrences)
             processor.run()
             Result.Ok("renamed \"$oldName\" → \"$newName\"")
         }
@@ -307,14 +311,20 @@ class RefactorService(private val project: Project) {
                 ),
                 targetDir
             )
-            MoveClassesOrPackagesProcessor(
+            // Headless safety: search code only (see rename()) so no modal preview
+            // pane can block the EDT in an unattended IDE.
+            val processor = MoveClassesOrPackagesProcessor(
                 project,
                 arrayOf(cls),
                 destination,
-                /* searchInComments = */ true,
-                /* searchInNonJava = */ true,
+                /* searchInComments = */ false,
+                /* searchInNonJava = */ false,
                 /* moveCallback = */ null,
-            ).run()
+            )
+            processor.setPreviewUsages(false)
+            // Dialogs are suppressed via -Dide.performance.skip.refactoring.dialogs; a conflict
+            // then throws ConflictsInTestsException instead of blocking. Proceed past it.
+            BaseRefactoringProcessor.ConflictsInTestsException.withIgnoredConflicts<RuntimeException> { processor.run() }
             Result.Ok("Moved '$qualifiedClassName' to package '$targetPackage'")
         }
     }
@@ -384,7 +394,9 @@ class RefactorService(private val project: Project) {
         }
 
         return runProcessorOnEdt {
-            ChangeSignatureProcessor(
+            // Headless safety: preview pane OFF (see rename()) so no modal dialog
+            // can block the EDT in an unattended IDE.
+            val processor = ChangeSignatureProcessor(
                 project,
                 method,
                 /* generateDelegate = */ false,
@@ -395,7 +407,10 @@ class RefactorService(private val project: Project) {
                 /* thrownExceptions = */ emptyArray<JavaThrownExceptionInfo>(),
                 /* propagateParametersMethods = */ emptySet(),
                 /* propagateExceptionsMethods = */ emptySet(),
-            ).run()
+            )
+            processor.setPreviewUsages(false)
+            // See moveClass(): proceed past suppressed-and-thrown conflicts.
+            BaseRefactoringProcessor.ConflictsInTestsException.withIgnoredConflicts<RuntimeException> { processor.run() }
             Result.Ok("Changed signature of '${method.name}'")
         }
     }
@@ -595,8 +610,15 @@ class RefactorService(private val project: Project) {
         for (root in roots.distinctBy { it.path }) {
             val vf = root.findFileByRelativePath(relativePath) ?: continue
             val javaFile = psiManager.findFile(vf) as? PsiJavaFile ?: continue
-            javaFile.classes.firstOrNull { it.qualifiedName == qualifiedName }?.let { return it }
-            javaFile.classes.firstOrNull { it.name == qualifiedName.substringAfterLast('.') }?.let { return it }
+            val candidate = javaFile.classes.firstOrNull { it.qualifiedName == qualifiedName }
+                ?: javaFile.classes.firstOrNull { it.name == qualifiedName.substringAfterLast('.') }
+            // Only return an element the refactoring engine will accept as in-project.
+            // A path-derived file that is not under a content/source root has
+            // PsiManager.isInProject()==false, which makes RenameProcessor/etc. abort with the
+            // modal "Cannot perform refactoring: ... not located inside the project" dialog —
+            // a precondition error gated on isUnitTestMode that the dialog-suppression property
+            // does NOT cover. Returning null here yields a clean "not found" instead of a hang.
+            if (candidate != null && psiManager.isInProject(candidate)) return candidate
         }
         return null
     }

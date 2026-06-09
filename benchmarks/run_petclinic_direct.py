@@ -45,7 +45,10 @@ def call_tool(port: int, tool_name: str, params: dict) -> dict:
     response = requests.post(
         TOOL_CALL_URL.format(port=port),
         json={"tool": tool_name, "params": params},
-        timeout=60,
+        # Heavy refactorings (move-class, change-signature) on a real project can
+        # take well over a minute on a cold IDE; 60s produced spurious read-timeout
+        # ERRORs that were not real refactoring failures.
+        timeout=180,
     )
     return response.json()
 
