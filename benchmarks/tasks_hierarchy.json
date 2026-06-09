@@ -1,0 +1,47 @@
+[
+  {
+    "id": "pc-pull-up-001",
+    "description": "Pull the field 'telephone' up from class org.springframework.samples.petclinic.owner.Owner to its superclass org.springframework.samples.petclinic.model.Person.",
+    "project": "spring-petclinic",
+    "projectTag": "3.3.0",
+    "operations": [
+      {
+        "tool": "find_symbol_by_name",
+        "params": { "qualifiedName": "org.springframework.samples.petclinic.owner.Owner#telephone" }
+      },
+      {
+        "tool": "pull_up_member",
+        "params": {
+          "memberQualifiedName": "org.springframework.samples.petclinic.owner.Owner#telephone",
+          "targetSuperClass": "org.springframework.samples.petclinic.model.Person"
+        }
+      }
+    ],
+    "validation": {
+      "type": "compile_and_symbol_exists",
+      "expectedSymbol": "org.springframework.samples.petclinic.model.Person#telephone",
+      "note": "After pull-up the field is declared in Person; the project must still compile."
+    }
+  },
+  {
+    "id": "pc-push-down-001",
+    "description": "Push the method 'getLastName' down from class org.springframework.samples.petclinic.model.Person into its subclasses (Owner, Vet).",
+    "project": "spring-petclinic",
+    "projectTag": "3.3.0",
+    "operations": [
+      {
+        "tool": "find_symbol_by_name",
+        "params": { "qualifiedName": "org.springframework.samples.petclinic.model.Person#getLastName" }
+      },
+      {
+        "tool": "push_down_member",
+        "params": { "memberQualifiedName": "org.springframework.samples.petclinic.model.Person#getLastName" }
+      }
+    ],
+    "validation": {
+      "type": "compile_and_symbol_exists",
+      "expectedSymbol": "org.springframework.samples.petclinic.owner.Owner#getLastName",
+      "note": "After push-down the method is declared in the subclass Owner; the project must still compile. (Scaffold task: not yet run against a cleanly-imported IDE.)"
+    }
+  }
+]
