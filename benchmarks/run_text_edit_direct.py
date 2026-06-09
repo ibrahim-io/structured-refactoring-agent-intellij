@@ -488,6 +488,25 @@ def git_reset_to_commit(project_dir: Path, sha: str) -> None:
     subprocess.run(["git", "clean", "-fd"], cwd=project_dir, capture_output=True)
 
 
+def git_diff_numstat(project_dir: Path, before_sha: str) -> dict:
+    """Size of the scripted edit vs before_sha (src/ only, working tree)."""
+    r = subprocess.run(
+        ["git", "diff", "--numstat", before_sha, "--", "src/"],
+        cwd=project_dir, capture_output=True, text=True,
+    )
+    files = added = removed = 0
+    for line in (r.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            files += 1
+            if parts[0].isdigit():
+                added += int(parts[0])
+            if parts[1].isdigit():
+                removed += int(parts[1])
+    return {"files_changed": files, "lines_added": added,
+            "lines_removed": removed, "lines_total": added + removed}
+
+
 def print_summary(results: list[dict]) -> None:
     passed = sum(1 for result in results if result["status"] == "PASS")
     print(f"\n{'=' * 60}")
@@ -544,6 +563,7 @@ def main() -> None:
             status = "ERROR"
 
         elapsed = round(time.time() - started, 2)
+        diffstat = git_diff_numstat(project_dir, before_sha) if before_sha else None
         print(f"  -> {status} in {elapsed}s ({len(direct_result['tool_calls'])} scripted operation(s))")
         results.append(
             {
@@ -554,6 +574,7 @@ def main() -> None:
                 "turns": direct_result["turns"],
                 "tool_calls": direct_result["tool_calls"],
                 "validation": validation,
+                "diffstat": diffstat,
             }
         )
         git_reset_to_commit(project_dir, before_sha)

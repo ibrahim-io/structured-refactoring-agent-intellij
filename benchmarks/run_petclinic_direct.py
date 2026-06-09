@@ -129,6 +129,29 @@ def git_reset_to_commit(project_dir: Path, sha: str) -> None:
     subprocess.run(["git", "clean", "-fd"], cwd=project_dir, capture_output=True)
 
 
+def git_diff_numstat(project_dir: Path, before_sha: str) -> dict:
+    """Size of the task's diff (vs before_sha): a proxy for how 'surgical' the edit is.
+
+    Source code only (src/), to exclude build artefacts. Renames count as the
+    added+removed lines git reports for them.
+    """
+    r = subprocess.run(
+        ["git", "diff", "--numstat", before_sha, "HEAD", "--", "src/"],
+        cwd=project_dir, capture_output=True, text=True,
+    )
+    files = added = removed = 0
+    for line in (r.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            files += 1
+            if parts[0].isdigit():
+                added += int(parts[0])
+            if parts[1].isdigit():
+                removed += int(parts[1])
+    return {"files_changed": files, "lines_added": added,
+            "lines_removed": removed, "lines_total": added + removed}
+
+
 def run_refactoring_miner(
     project_dir: Path,
     rm_jar: str | None,
@@ -436,11 +459,14 @@ def main() -> None:
             before_sha = git_commit_all(project_dir, f"direct-baseline-before-{task['id']}")
 
         started = time.time()
+        diffstat = None
         try:
             agent_result = run_task_direct(task, args.agent_port)
 
             if project_dir and project_dir.exists():
                 git_commit_all(project_dir, f"direct-after-{task['id']}")
+                if before_sha:
+                    diffstat = git_diff_numstat(project_dir, before_sha)
 
             validation = validate(
                 task,
@@ -466,6 +492,7 @@ def main() -> None:
                 "turns": agent_result["turns"],
                 "tool_calls": agent_result["tool_calls"],
                 "validation": validation,
+                "diffstat": diffstat,
             }
         )
 

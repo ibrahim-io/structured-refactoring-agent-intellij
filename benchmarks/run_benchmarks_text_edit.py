@@ -46,6 +46,37 @@ if _env.exists():
             os.environ.setdefault(k.strip(), v.strip())
 
 
+# ── Rate-limit back-off (free-tier providers throttle aggressively) ──────────
+def _retry_seconds(msg: str):
+    """Extract a wait hint like 'try again in 367.5ms' / 'in 9m49.68s' from a 429 message."""
+    m = re.search(r"try again in\s+(?:(\d+)m)?\s*(\d+(?:\.\d+)?)\s*(ms|s)", msg)
+    if not m:
+        return None
+    mins = int(m.group(1)) if m.group(1) else 0
+    val  = float(m.group(2))
+    secs = val / 1000.0 if m.group(3) == "ms" else val
+    return mins * 60 + secs
+
+
+def _chat_with_backoff(client, max_retries: int = 6, **kwargs):
+    """chat.completions.create with retry on short (per-minute) rate limits.
+    Long/daily limits are re-raised so the suite fails fast instead of stalling for minutes."""
+    delay = 2.0
+    for attempt in range(max_retries):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except _openai_mod.RateLimitError as e:
+            wait = _retry_seconds(str(e))
+            if wait is None:
+                wait = delay
+                delay = min(delay * 2, 30)
+            if wait > 90:           # daily/long limit -> don't block the whole run
+                raise
+            print(f"    rate-limited; waiting {wait:.1f}s (retry {attempt + 1}/{max_retries})", flush=True)
+            time.sleep(wait + 0.5)
+    return client.chat.completions.create(**kwargs)  # final attempt; let it raise
+
+
 # ── File-I/O tools for the text-edit agent ──────────────────────────────────
 
 TEXT_EDIT_TOOLS = [
@@ -232,12 +263,14 @@ def run_task_text_edit(task: dict, project_dir: Path, api_key: str,
 
 def run_task_text_edit_openai(task: dict, project_dir: Path, api_key: str,
                               model: str = "gpt-4o",
-                              max_turns: int = 12) -> dict:
-    """Run the text-edit agent using an OpenAI model."""
+                              max_turns: int = 12,
+                              base_url: str = None) -> dict:
+    """Run the text-edit agent using an OpenAI-compatible model (OpenAI, Groq, Gemini)."""
     if not HAS_OPENAI:
         raise RuntimeError("openai package not installed. Run: pip install openai")
 
     oai_tools = anthropic_to_openai_tools(TEXT_EDIT_TOOLS)
+    tool_names = ", ".join(t["function"]["name"] for t in oai_tools)
     system_prompt = (
         "You are a software engineering assistant performing code refactoring "
         "using ONLY text-based file operations. "
@@ -246,24 +279,53 @@ def run_task_text_edit_openai(task: dict, project_dir: Path, api_key: str,
         "You must read files, understand their content, and write updated versions. "
         "Be thorough: always check ALL files in the project for cross-file references "
         "that may need updating (imports, usages, call sites). "
-        "Use list_java_files to discover all source files before making changes."
+        "Use list_java_files to discover all source files before making changes.\n\n"
+        f"IMPORTANT: The ONLY tools available to you are: {tool_names}. "
+        "Do NOT call any other tool. There is no search, grep, or find tool. "
+        "To locate a symbol, list the files and read them, scanning the text yourself."
     )
 
-    client = _openai_mod.OpenAI(api_key=api_key)
+    client = _openai_mod.OpenAI(api_key=api_key, base_url=base_url)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task["description"]},
     ]
     tool_calls_made = []
     turns = 0
+    valid_tool_names = [t["function"]["name"] for t in oai_tools]
+    consecutive_tool_errors = 0
 
     while turns < max_turns:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=oai_tools,
-            tool_choice="auto",
-        )
+        try:
+            response = _chat_with_backoff(
+                client,
+                model=model,
+                messages=messages,
+                tools=oai_tools,
+                tool_choice="auto",
+            )
+        except _openai_mod.BadRequestError as e:
+            # Some OpenAI-compatible providers (notably Groq) hard-reject a turn when the
+            # model calls a tool not in the provided list, instead of returning the call
+            # for the application to handle. Recover by reminding the model of the valid
+            # tool set and retrying, rather than failing the entire task.
+            if "tool" not in str(e).lower():
+                raise
+            consecutive_tool_errors += 1
+            if consecutive_tool_errors > 3:
+                raise
+            turns += 1
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Your previous response called a tool that is not available. "
+                    "You may ONLY call these tools: " + ", ".join(valid_tool_names) + ". "
+                    "There is no search/grep/find tool. To locate code, call list_java_files "
+                    "then read_file and scan the text yourself. Continue using only these tools."
+                ),
+            })
+            continue
+        consecutive_tool_errors = 0
         turns += 1
 
         msg = response.choices[0].message
@@ -475,6 +537,27 @@ def git_reset_to_commit(project_dir: Path, sha: str) -> None:
     subprocess.run(["git", "clean", "-fd"], cwd=project_dir, capture_output=True)
 
 
+def git_diff_numstat(project_dir: Path, before_sha: str) -> dict:
+    """Size of the agent's diff vs before_sha (src/ only, working tree): a proxy
+    for how 'surgical' the edit is. The text-edit agent leaves changes uncommitted,
+    so this diffs the working tree against the pre-task baseline."""
+    r = subprocess.run(
+        ["git", "diff", "--numstat", before_sha, "--", "src/"],
+        cwd=project_dir, capture_output=True, text=True,
+    )
+    files = added = removed = 0
+    for line in (r.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            files += 1
+            if parts[0].isdigit():
+                added += int(parts[0])
+            if parts[1].isdigit():
+                removed += int(parts[1])
+    return {"files_changed": files, "lines_added": added,
+            "lines_removed": removed, "lines_total": added + removed}
+
+
 def git_commit_all(project_dir: Path, message: str) -> str:
     subprocess.run(["git", "add", "-A"], cwd=project_dir, capture_output=True)
     subprocess.run(
@@ -494,8 +577,10 @@ def main():
         description="Run TEXT-EDIT baseline agent benchmarks (no IntelliJ/AST)"
     )
     parser.add_argument("--tasks",        default="benchmarks/tasks.json")
-    parser.add_argument("--provider",     default="anthropic", choices=["anthropic", "openai"],
-                        help="LLM provider to use (anthropic or openai)")
+    parser.add_argument("--provider",     default="anthropic",
+                        choices=["anthropic", "openai", "groq", "gemini"],
+                        help="LLM provider (anthropic, openai, groq, gemini). "
+                             "groq and gemini use their OpenAI-compatible endpoints.")
     parser.add_argument("--api-key",      default="",
                         help="API key (defaults to ANTHROPIC_API_KEY or OPENAI_API_KEY env var)")
     parser.add_argument("--model",        default="",
@@ -509,17 +594,24 @@ def main():
     )
     args = parser.parse_args()
 
-    # Resolve API key and default model from provider
-    if args.provider == "openai":
-        api_key = args.api_key or os.environ.get("OPENAI_API_KEY", "")
-        model   = args.model or "gpt-4o"
-    else:
-        api_key = args.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        model   = args.model or "claude-sonnet-4-6"
+    # Resolve API key, default model, and (for OpenAI-compatible providers) base URL.
+    PROVIDER_CONFIG = {
+        "anthropic": {"env": "ANTHROPIC_API_KEY", "model": "claude-sonnet-4-6",     "base_url": None},
+        "openai":    {"env": "OPENAI_API_KEY",    "model": "gpt-4o",                 "base_url": None},
+        "groq":      {"env": "GROQ_API_KEY",      "model": "openai/gpt-oss-120b",
+                      "base_url": "https://api.groq.com/openai/v1"},
+        "gemini":    {"env": "GEMINI_API_KEY",    "model": "gemini-2.0-flash",
+                      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"},
+    }
+    cfg = PROVIDER_CONFIG[args.provider]
+    api_key = args.api_key or os.environ.get(cfg["env"], "")
+    if not api_key and args.provider == "gemini":
+        api_key = os.environ.get("GOOGLE_API_KEY", "")
+    model    = args.model or cfg["model"]
+    base_url = cfg["base_url"]
 
     if not api_key:
-        env_var = "OPENAI_API_KEY" if args.provider == "openai" else "ANTHROPIC_API_KEY"
-        print(f"ERROR: No API key. Set {env_var} or use --api-key")
+        print(f"ERROR: No API key. Set {cfg['env']} (in .env or environment) or use --api-key")
         sys.exit(1)
 
     tasks = json.loads(Path(args.tasks).read_text(encoding="utf-8"))
@@ -558,15 +650,16 @@ def main():
 
         t0 = time.time()
         try:
-            if args.provider == "openai":
-                agent_result = run_task_text_edit_openai(
+            if args.provider == "anthropic":
+                agent_result = run_task_text_edit(
                     task, project_dir, api_key,
                     model=model, max_turns=args.max_turns,
                 )
             else:
-                agent_result = run_task_text_edit(
+                agent_result = run_task_text_edit_openai(
                     task, project_dir, api_key,
                     model=model, max_turns=args.max_turns,
+                    base_url=base_url,
                 )
             validation = validate(task, agent_result, project_dir)
             status = "PASS" if validation["passed"] else "FAIL"
@@ -576,6 +669,7 @@ def main():
             status = "ERROR"
 
         elapsed = round(time.time() - t0, 2)
+        diffstat = git_diff_numstat(project_dir, before_sha) if before_sha else None
         print(f"  -> {status} in {elapsed}s ({agent_result['turns']} turns)")
         results.append({
             "id": task["id"],
@@ -585,6 +679,7 @@ def main():
             "turns": agent_result["turns"],
             "tool_calls": agent_result["tool_calls"],
             "validation": validation,
+            "diffstat": diffstat,
         })
 
         # Reset project to the pre-task state so each task starts clean
