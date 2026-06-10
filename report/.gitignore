@@ -1,0 +1,21 @@
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.run.xml
+*.bcf
+main.pdf
+
+# Generated text/TTS + scratch artifacts (regenerable from sources)
+main.txt
+main_read.html
+main_read.txt
+jsonnode_usages.json

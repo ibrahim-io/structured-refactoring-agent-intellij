@@ -1,0 +1,801 @@
+% =============================================================================
+%  CHAPTER 5 — EVALUATION
+%  SOURCE:   docs/EVALUATION.md + docs/CROSS_AGENT_EVALUATION.md + results/*.json
+%  RUBRIC:   Evaluation & Reflection (20%) + heavy Execution (50%) overlap
+%  BUDGET:   ~10-14 pages — this chapter earns the most marks per page.
+%  TOP BAND: fair baselines, measured (not predicted) numbers, explicit threats
+%            to validity, and self-critical interpretation.
+%
+%  >>> THE #1 RISK (see memory project-evaluation-gap):
+%      - Do NOT present the 4 petclinic "PASS (expected)" rows as results.
+%      - Do NOT headline scripted-regex baseline vs predicted-structured as the
+%        main correctness claim — it is not apples-to-apples.
+%      - RUN the structured Claude agent AND the LLM text-edit agent on the
+%        9-task petclinic suite, then report THOSE numbers.
+%
+%  >>> WHAT IS DRAFTED HERE (AI first draft, grounded in your docs — verify every
+%      number against results/*.json, then edit into your own voice):
+%        - Research Questions, Experimental Setup, Validation Methodology
+%        - Sample-project results table (MEASURED: results/structured-4.json vs
+%          results/text-edit-1.json)
+%        - spring-petclinic scripted baseline (MEASURED 6/9) + root-cause analysis
+%        - Threats to Validity (descriptive)
+%      WHAT IS YOURS TO WRITE (marked \writeme — the judgement/interpretation):
+%        - the Discussion's interpretive claims
+%        - the LLM-vs-LLM petclinic numbers slot (run finishing in background)
+% =============================================================================
+\chapter{Evaluation}
+\label{ch:eval}
+
+% --- AI FIRST DRAFT from docs/EVALUATION.md. Edit into your own voice. ---
+This chapter evaluates the central claim of the project: that performing
+refactorings through the IDE's structured engine, rather than by generating
+modified source text, yields transformations that are correct with respect to
+the program's semantic model, and does so more efficiently than a text-editing
+agent. \Cref{sec:eval-rqs} restates the research questions and maps each to an
+experiment. \Cref{sec:eval-setup,sec:eval-validation} describe the benchmark
+projects, agents, and the multi-layer validation pipeline that produces the
+objective correctness signal. \Cref{sec:eval-sample,sec:eval-petclinic} report
+measured results on a small purpose-built project and on the real-world
+\texttt{spring-petclinic} application respectively, and \Cref{sec:eval-rootcause}
+analyses \emph{why} the text-editing baseline fails the cases it fails.
+\Cref{sec:eval-threats} states the threats to validity, and \Cref{sec:eval-discussion}
+interprets what the results do and do not establish.
+
+\section{Research Questions}
+\label{sec:eval-rqs}
+% --- AI FIRST DRAFT. These mirror the RQs you frame in the Introduction; keep
+%     the wording consistent with sec:intro-rqs once you write that section. ---
+The evaluation is organised around three research questions; a fourth,
+concerning developer-perceived effort, is a controlled human study deferred to
+future work (\Cref{ch:conclusion}).
+
+\begin{description}
+  \item[RQ1 (Correctness).] Does refactoring through the structured IDE engine
+    produce semantically correct, compile-safe transformations, and where does a
+    text-substitution agent operating on the same tasks fail? \emph{Answered by
+    the compile-and-content validation across both benchmark projects
+    (\Cref{sec:eval-sample,sec:eval-petclinic}) and the root-cause analysis
+    (\Cref{sec:eval-rootcause}).}
+  \item[RQ2 (Autonomy).] Can a function-calling LLM, given only the tool API and
+    injected project context, complete multi-step refactoring tasks on an
+    unfamiliar codebase without manual intervention? \emph{Answered by the
+    end-to-end agent runs in which the model is told only the task description and
+    must locate symbols and select operations itself.}
+  \item[RQ3 (Efficiency).] At equal correctness, does the structured action space
+    reduce the interaction cost --- API round-trips and tool invocations --- of
+    completing a task relative to raw file editing? \emph{Answered by the turn and
+    tool-call measurements in \Cref{sec:eval-sample}.}
+\end{description}
+
+\section{Experimental Setup}
+\label{sec:eval-setup}
+% --- AI FIRST DRAFT from docs/EVALUATION.md §2-5 + CROSS_AGENT_EVALUATION.md. ---
+
+\subsection{Benchmark Projects}
+Three Java projects are used. The first, \emph{sample-java-project}, is a Maven
+project of ten classes (Java~17) that was constructed specifically to exercise
+cross-file refactoring: several tasks rename or move a symbol that is referenced
+from other files, so that a tool which updates only the declaration --- and not
+its remote references --- produces code that no longer compiles. Because the
+project is hand-crafted to expose the structural advantages of AST-aware
+refactoring, it functions as a controlled instrument rather than a representative
+sample; this is revisited in \Cref{sec:eval-threats}.
+
+The second, \texttt{spring-petclinic}, is the canonical Spring Boot sample
+application (cloned at tag \texttt{3.3.0}), comprising roughly thirty classes
+organised into the layered packages typical of a real Spring project. It is used
+to test whether the agent can navigate an unfamiliar, idiomatic codebase it was
+not designed around, and to surface structural hazards --- name collisions across
+classes, implicit same-package references, and method overloading --- that a
+small artificial project does not naturally contain.
+
+The third, \texttt{commons-lang} (Apache Commons Lang, cloned at tag
+\texttt{rel/commons-lang-3.14.0}), is a widely-used utility library of 246
+source files --- roughly an order of magnitude larger than the others and from a
+different domain. It is included specifically to test whether the structural
+findings hold \emph{at scale} on an independent, real-world codebase, addressing
+the external-validity concern that the other two projects raise
+(\Cref{sec:eval-threats}).
+
+\subsection{Task Suites}
+Each project has a corresponding task suite. \texttt{tasks.json} defines eight
+tasks on the sample project spanning seven operation types (field and method
+rename, move class, safe-delete, inline method, class creation, add method, and
+change signature); five of the eight involve at least one cross-file reference.
+\texttt{tasks\_petclinic.json} defines nine tasks on \texttt{spring-petclinic}
+across the same operation families, including three tasks
+(\Cref{sec:eval-rootcause}) specifically chosen to require type- and
+reference-level information that text matching cannot recover. Every task carries
+a machine-checkable success specification (\Cref{sec:eval-validation}).
+
+\paragraph{Operation coverage and representativeness.} The benchmarked operations
+deliberately span both ends of what coding agents do in practice. The large-scale
+empirical study of \citet{agenticrefactoring2025} finds that agent refactorings are
+dominated by localized renames and type changes (rename-parameter 10.4\%,
+rename-variable 8.5\%, change-variable-type 11.8\%), so the rename-heavy core of the
+suite mirrors the most common agent behaviour. Conversely, the structural operations
+the suite also includes --- move class, change signature, and
+overload-disambiguated rename --- are precisely those the same study reports agents
+\emph{avoid} relative to human developers, i.e.\ the higher-level changes where
+free-text editing is riskiest. The suite therefore exercises an agent both where it
+is already active and where a structurally-safe execution layer could expand what it
+can attempt without risking incorrect edits.
+
+\subsection{Agents and Modes}
+\label{sec:eval-modes}
+The primary comparison is between two \emph{edit primitives} --- the structured
+IDE engine versus raw text editing --- not between two language models. To
+separate the contribution of the edit primitive from that of the driving model's
+capability, the primitives are exercised in a controlled $2\times2$ design
+(\Cref{tab:modes}): each is driven by (i)~\emph{no LLM} (a scripted ``direct''
+runner), (ii)~a \emph{weak, freely-available} model, and (iii)~a \emph{capable
+commercial} agent. Holding the model fixed and varying only the primitive
+isolates the action space; holding the primitive fixed and varying the model
+isolates capability.
+
+\begin{table}[t]
+  \centering
+  \caption{Evaluation arms. The \emph{direct} modes isolate the edit primitive
+  with no LLM; the \emph{agent} modes add an LLM that receives only the task
+  description and must locate symbols and choose operations itself. The capable
+  agent is the system's intended deployment (a commercial Claude Code agent
+  driving the tools); the weak models establish how each action space behaves
+  under limited tool-use capability.}
+  \label{tab:modes}
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    Arm & Edit primitive & Driver (model) \\
+    \midrule
+    Structured direct          & IntelliJ PSI engine  & none (scripted) \\
+    Scripted text-edit         & regex/string rewrite & none (scripted) \\
+    Structured agent (capable) & IntelliJ PSI engine  & Claude Opus~4.8 \\
+    Structured agent (weak)    & IntelliJ PSI engine  & qwen2.5:7b (local) \\
+    Text-edit agent (capable)  & raw file I/O         & Claude Opus~4.8 \\
+    Text-edit agent (weak)     & raw file I/O         & llama-4-scout (Groq) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The \emph{direct} modes execute the predefined operation for each task with no
+model in the loop: the structured-direct runner calls the plugin's tool API, and
+the scripted text-edit runner applies a word-boundary regex substitution. They
+isolate the edit primitive itself --- a lower bound for the text side and a
+ceiling check for the structured side --- independently of any model's planning.
+The scripted baseline is deliberately weaker than a modern LLM agent; it is
+included as a transparent lower bound that exposes exactly what raw name-matching
+can and cannot do, not as the headline comparator.
+
+The \emph{agent} modes wrap each primitive in an LLM tool-use loop. The agent
+receives only the natural-language task description and the injected project
+context (\Cref{ch:impl}), and must itself find the target symbol and issue the
+appropriate calls; it is never told file paths or text offsets. The runners are
+model-agnostic --- a \texttt{--provider} switch drives Anthropic,
+OpenAI-compatible, Groq, and local Ollama endpoints --- which both supports the
+model-agnostic architectural claim (\Cref{sec:design-mcp}) and lets the
+evaluation run on freely available models.
+
+\paragraph{Capable agent (intended deployment).} The capable arm is
+\textbf{Claude Opus~4.8} (model identifier \texttt{claude-opus-4-8}). Because no
+paid API budget was available, it was exercised in the form the system is
+designed for: a commercial \emph{Claude Code} agent driving the tools, realised
+as fresh, \emph{blind} subagents --- one per task, given only the task text and
+the live tool schema (\texttt{GET /tools/schema}), with no expected answers and
+no knowledge of the success criteria. The structured arm makes all edits through
+the tools; the text-edit arm edits files directly with no structured tool
+available. Both may run \texttt{mvn compile} and iterate to self-correct,
+mirroring a real developer's Claude Code session. Each task is independently
+scored by the same objective oracle (\Cref{sec:eval-validation}) and the project
+is reset between tasks. This use of Claude throughout --- both to orchestrate the
+runs and as the agent under test --- is disclosed in the GenAI declaration; it
+demonstrates the intended deployment and the action-space ceiling, and is not an
+independent third-party benchmark.
+
+\paragraph{Weak agents (capability floor).} The weak structured arm is
+\textbf{qwen2.5:7b} served locally through Ollama (no rate limit); the weak
+text-edit arm is Groq-hosted \texttt{meta-llama/llama-4-scout-17b-16e-instruct}.
+Both use a 20-turn per-task budget at temperature~0. They establish how each
+action space degrades under limited tool-use capability --- which, as
+\Cref{sec:eval-discussion} shows, differs sharply between the two primitives.
+
+\paragraph{Reproducibility.} The environment was IntelliJ IDEA Community~2025.1.4
+(platform build~251), plugin~v0.2.0, launched via Gradle~8.14.3
+\texttt{runIde}; Apache Maven~3.8.5 with Oracle JDK~24.0.2 served as the
+compile/validation oracle; Python~3.10.5; Ollama~0.30.2. The headless flag
+\texttt{-Dide.performance.skip.refactoring.dialogs=true} (and
+\texttt{-Didea.trust.all.projects=true} for unattended runs) makes the
+refactoring engine non-interactive. Exact commands, model identifiers, and the
+per-arm harness are recorded in the project repository
+(\texttt{docs/EXPERIMENTAL\_SETUP.md}) so every figure can be reproduced.
+
+\section{Validation Methodology}
+\label{sec:eval-validation}
+% --- AI FIRST DRAFT from docs/EVALUATION.md §4. ---
+Correctness is judged not by inspecting the model's output text but by checking
+the state of the project after the operation, through a pipeline of up to four
+layers. The key methodological commitment is that \textbf{compilation is the
+primary objective correctness signal}: a transformation that misses a cross-file
+reference, breaks an import, or renames the wrong symbol manifests as a
+\texttt{mvn compile} failure, independently of how plausible the edited text
+looks.
+
+\begin{enumerate}
+  \item \textbf{Tool-call layer.} Every mutating operation returned success and
+    all operations the task requires were actually invoked.
+  \item \textbf{Compile layer.} \texttt{mvn compile} succeeds on the project after
+    the refactoring. This is the primary signal: it is where an agent that fails
+    to update remote references is caught.
+  \item \textbf{Disk-content layer.} Task-specific checks on the files on disk:
+    that an expected file or symbol exists, or --- for renames and moves --- that
+    the \emph{old} symbol name is absent from \emph{all} source files. Content
+    checks use a word-boundary regex (\texttt{\textbackslash b<symbol>\textbackslash b})
+    so that, for example, \texttt{normalize} does not spuriously match
+    \texttt{normalizeInput}. A \emph{surviving-symbol} variant additionally asserts
+    that names which \emph{should} have been left untouched are still present,
+    which is what catches an over-eager rename (\Cref{sec:eval-rootcause}).
+  \item \textbf{RefactoringMiner layer (optional).} For tasks where it applies,
+    RefactoringMiner~\citep{refactoringminer2025} is run over the before/after
+    commits to confirm that the intended refactoring type (e.g.\ ``Rename Method'',
+    ``Move Class'') is detected in the diff.
+\end{enumerate}
+
+Both runners enforce \textbf{task isolation}: the project's baseline state is
+committed before each task and restored by \texttt{git reset} afterwards, so tasks
+cannot contaminate one another. This reset pattern interacts subtly with
+IntelliJ's in-memory file model and was the source of one of the engineering
+challenges discussed in \Cref{sec:impl-vfs}; the structured runner therefore
+forces a virtual-file-system refresh and waits briefly after each reset before
+the next task begins.
+
+\section{Results: Sample Project (Measured)}
+\label{sec:eval-sample}
+% --- AI FIRST DRAFT. Numbers MEASURED and verified against:
+%       results/structured-4.json   (structured agent, 8 tasks)
+%       results/text-edit-1.json    (text-edit agent, 8 tasks)
+%     Recompute before submission if you re-run. ---
+On the eight-task sample suite, both agents complete all tasks: the project
+compiles and every content check passes in both the structured and the text-edit
+modes (\Cref{tab:sample-correctness}). \textbf{On a project of this size,
+correctness alone does not separate the two approaches.} A capable LLM driving raw
+file edits can compensate for the absence of a reference index by reading every
+file and enumerating the call sites by hand --- and on ten classes it has the
+context budget to do so.
+
+\begin{table}[t]
+  \centering
+  \caption{Sample project (8 tasks): correctness and efficiency. Correctness is
+  identical; the separation is in interaction cost. Source:
+  \texttt{results/structured-4.json}, \texttt{results/text-edit-1.json}.}
+  \label{tab:sample-correctness}
+  \begin{tabular}{@{}lcc@{}}
+    \toprule
+    Metric & Structured agent & Text-edit agent \\
+    \midrule
+    Tasks passed (compile + content) & \textbf{8/8} & \textbf{8/8} \\
+    Mean turns (API round-trips) per task     & 3.4 & 4.2 \\
+    Mean tool calls per task                  & 3.8 & 9.8 \\
+    Median tool calls per task                & 3   & 9.5 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The separation is instead in \emph{efficiency}. The structured agent completes
+each task in fewer API round-trips (mean 3.4 vs 4.2) and substantially fewer tool
+calls (mean 3.8 vs 9.8). The mean understates the typical gap, because it is
+inflated by a single structured outlier: \texttt{inline-001}, which inlines a
+method across five call sites, took 13 structured tool calls. Excluding that task,
+the structured agent never exceeds three calls; the \emph{median} of three calls
+versus 9.5 is the more representative figure. The mechanism is direct: a
+structured rename is one call that updates the declaration and every reference
+atomically, whereas the text-edit agent must list files, read several of them,
+locate each occurrence, and issue a separate edit per site --- roughly a
+$2.6\times$ increase in tool invocations for the same outcome.
+
+For RQ3, this is the trade-off in the structured engine's favour: at equal correctness,
+performing the change in a single tool call --- rather than listing files, reading
+several of them, and issuing one edit per site --- substantially cuts the agent's
+interaction cost. Operationally this matters, because frontier models of the kind behind
+Claude Code are metered by tokens and round-trip latency, so fewer calls mean lower cost
+and faster completion; and because each discrete operation is a chance to emit a
+malformed call or miss a site, fewer operations also mean fewer opportunities to err.
+
+\section{Results: spring-petclinic}
+\label{sec:eval-petclinic}
+% =============================================================================
+%  >>> ACTION REQUIRED before this section is final:
+%      1. LLM text-edit petclinic run is executing now ->
+%         results/text-edit-petclinic-gptoss.json. Fill tab:petclinic with its
+%         per-task PASS/FAIL once it lands.
+%      2. Structured-LLM (and remaining structured-direct) petclinic tasks need
+%         the sandbox IntelliJ. Until run, DO NOT report them as measured —
+%         the table below marks them "not yet run".
+% =============================================================================
+The sample project shows that a small codebase does not discriminate the two
+approaches on correctness. The purpose of \texttt{spring-petclinic} is to test
+the correctness claim where it should bite: on an unfamiliar, real-world project
+containing structural hazards a ten-class project does not.
+
+\subsection{Scripted text-edit lower bound (measured)}
+The scripted text-edit runner --- the no-LLM lower bound --- passes
+\textbf{6 of 9} tasks (\Cref{tab:petclinic}). The three failures are not random:
+each is a task that requires type or reference information that a word-boundary
+text substitution does not have. They are analysed in \Cref{sec:eval-rootcause}.
+This establishes, concretely and reproducibly, that raw name-matching is
+\emph{insufficient} for three common refactorings on a real codebase --- before
+any LLM is involved.
+
+\begin{table}[t]
+  \centering
+  \caption{spring-petclinic (9 tasks), all columns measured. Scripted text-edit is the
+  no-LLM lower bound (\texttt{results/text-edit-petclinic-direct-7.json}); LLM text-edit is
+  the \texttt{llama-4-scout} agent (\texttt{results/text-edit-petclinic-llama4scout.json});
+  structured executes the plugin's IntelliJ PSI refactoring operations directly, with no
+  LLM (\texttt{results/structured-petclinic-direct-FINAL.json}). The structured column is
+  the tool-layer ceiling; an LLM-driven structured agent is left to future work
+  (\Cref{ch:conclusion}).}
+  \label{tab:petclinic}
+  \begin{tabular}{@{}llccc@{}}
+    \toprule
+    Task & Operation & Scr.\ text-edit & LLM text-edit & Structured \\
+     & & {\footnotesize(no LLM)} & {\footnotesize(LLM planner)} & {\footnotesize(direct, no LLM)} \\
+    \midrule
+    \texttt{pc-rename-001}        & rename field      & PASS & PASS & PASS \\
+    \texttt{pc-add-method-001}    & add method        & PASS & PASS & PASS \\
+    \texttt{pc-find-usages-001}   & find usages       & PASS & \textbf{FAIL}$^\dagger$ & PASS \\
+    \texttt{pc-read-file-001}     & read file         & PASS & PASS & PASS \\
+    \texttt{pc-rename-002}        & rename class+file & PASS & PASS & PASS \\
+    \texttt{pc-rename-method-001} & rename method     & \textbf{FAIL} & PASS & PASS \\
+    \texttt{pc-move-001}          & move class        & \textbf{FAIL} & \textbf{FAIL} & PASS \\
+    \texttt{pc-rename-method-002} & rename overload   & \textbf{FAIL} & \textbf{FAIL} & PASS \\
+    \texttt{pc-change-sig-001}    & change sig.       & PASS & PASS & PASS \\
+    \midrule
+    \multicolumn{2}{@{}l}{\textbf{Total}} & \textbf{6/9} & \textbf{6/9} & \textbf{9/9} \\
+    \bottomrule
+  \end{tabular}
+
+  \smallskip
+  {\footnotesize $^\dagger$\,The text-edit toolset exposes no structural
+  find-usages operation, so the agent cannot answer a project-wide reference query
+  by construction.}
+\end{table}
+
+\subsection{LLM text-edit agent (measured)}
+The LLM text-edit agent shown here --- the \emph{weak} free model
+\texttt{llama-4-scout}, driven by raw file tools only (the \emph{capable} text-editing
+agent is compared separately in \Cref{sec:eval-controlled}) --- also passes
+\textbf{6 of 9} tasks (\Cref{tab:petclinic}), but it is instructive
+that it fails a \emph{different} set from the scripted baseline. The agent
+\emph{succeeds} on \texttt{pc-rename-method-001}, the cross-class \texttt{addVisit}
+collision that defeats the scripted substitution: by reading the relevant files it
+renames only \texttt{Owner.addVisit} and its caller while leaving
+\texttt{Pet.addVisit} untouched, which the surviving-symbol check confirms. A
+capable model can therefore reason its way past a name collision that pure string
+matching cannot. It likewise renames the class \emph{and} its file correctly in
+\texttt{pc-rename-002}.
+
+It nonetheless fails exactly where text editing lacks information the IDE engine
+has by construction. On \texttt{pc-move-001} it moves \texttt{PetValidator} to the
+new package (the file appears at the new path) but the project no longer compiles,
+because it does not synthesise the now-required import for the same-package
+reference to \texttt{Pet}. On \texttt{pc-rename-method-002} it renames the target
+overload to \texttt{findPet} but again breaks compilation. And it cannot perform
+\texttt{pc-find-usages-001} at all: the text-edit toolset exposes no structural
+usage query, so a project-wide reference count lies outside its action space.
+
+The decisive observation is the \emph{intersection of failures}. The two tasks
+that defeat \emph{both} a na\"ive script \emph{and} a capable LLM editing raw text
+--- \texttt{pc-move-001} and \texttt{pc-rename-method-002} --- are precisely those
+that require synthesising an implicit import and performing an overload-safe rename
+with caller updates. These are not the kind of failure a larger model would
+obviously remove; they are failures of the \emph{edit primitive}, which acts on
+text rather than on a typed, project-wide reference graph
+(\Cref{sec:eval-rootcause}).
+
+\paragraph{A practical constraint worth recording.} Running an LLM text-edit agent
+over a real project is token-intensive: each turn resends the growing transcript of
+file contents the agent has read. A first attempt using a larger model
+(\texttt{gpt-oss-120b}) on a free API tier could not complete the suite at all ---
+its per-minute token limit (8{,}000) is exceeded once one or two source files are
+in context, so six of nine tasks aborted before any edit was made. The run reported
+here used a model whose free-tier per-minute budget (30{,}000 tokens) was large
+enough to sustain the loop. The structured agent never reads whole files into the
+prompt to act on them (\Cref{sec:eval-sample}), so its per-task token footprint is
+far smaller --- an efficiency advantage with a direct cost dimension.
+
+\subsection{Structured operations (measured)}
+Executing the same nine tasks through the plugin's IntelliJ refactoring operations
+yields \textbf{9 of 9} (\Cref{tab:petclinic}). Decisively, the structured engine
+passes every task that defeats one or both text approaches, and the validation
+signals confirm \emph{why}:
+\begin{itemize}
+  \item \texttt{pc-move-001}: \texttt{PetValidator} is moved to the \texttt{system}
+    package and the project still \emph{compiles} --- \texttt{MoveClassesOrPackagesProcessor}
+    synthesised the import for the same-package reference to \texttt{Pet} that the
+    text agents could not (\Cref{sec:eval-rootcause}).
+  \item \texttt{pc-rename-method-002}: only the \texttt{(String, boolean)} overload
+    becomes \texttt{findPet}; the surviving-symbol check confirms the other
+    \texttt{getPet} overloads are untouched --- the type-signature targeting that
+    text matching lacks.
+  \item \texttt{pc-rename-method-001}: \texttt{Owner.addVisit} becomes
+    \texttt{recordVisit} while \texttt{Pet.addVisit} survives, and
+    \texttt{pc-rename-002} renames the class \emph{and} its file on disk.
+\end{itemize}
+Against these baselines the headline is \textbf{structured 9/9 versus 6/9 for both
+text approaches}, with the gap concentrated in exactly the three reference-graph /
+type-system operations of \Cref{sec:eval-rootcause}. Two qualifications are essential,
+and are developed in \Cref{sec:eval-controlled}. First, this column isolates the
+\emph{edit primitive}: it executes the operations directly, with no LLM planner, and so
+measures whether the structured tools \emph{can} perform each task correctly --- which
+they do by construction. That an LLM can itself \emph{select and invoke} these
+operations correctly is confirmed by running the structured \emph{agent} (Claude
+Opus~4.8) end-to-end: it also scores 9/9 here, and 4/4 and 3/3 on the two larger
+projects (\Cref{sec:eval-controlled}) --- so the LLM-driven structured agent is now
+\emph{measured}, not deferred. Second, the ``6/9 for text'' figure is for the scripted
+baseline and a \emph{weak} free model; a \emph{capable} text-editing agent does
+markedly better (7/9), so the durable claim is not raw correctness against any text
+editor but the action space's behaviour under limited capability, together with the
+structural queries and precision that text editing cannot match.
+
+\paragraph{Engineering the structured runner to be non-interactive (and a threat to
+validity).} Driving IntelliJ's refactoring engine unattended is not free: the engine
+is built for an interactive user, so multi-file operations raise modal dialogs (a
+usage preview, a conflicts dialog, an automatic-rename dialog) that block the UI
+thread indefinitely when no one is present to dismiss them. Reaching the 9/9 above
+required making the operations genuinely headless --- routing them through the
+platform's non-interactive code paths (the \texttt{ide.performance.skip.refactoring.dialogs}
+switch and proceeding past recorded conflicts) and ensuring each operation resolves
+an in-project element after reconciling the virtual file system with the on-disk
+state. This is the same external-change hazard analysed in \Cref{sec:impl-vfs},
+encountered again here: the benchmark git-resets the project between tasks, and a
+stale virtual file system manifested as refactorings that executed in the PSI but
+did not persist, or as ``element is not located inside the project'' precondition
+errors. This is on-thesis rather than incidental: the structured numbers were obtained
+on a freshly imported, isolated IDE instance, and making the headless path robust ---
+suppressing the modal dialogs and reconciling the virtual file system after each
+git-reset (\Cref{sec:impl-vfs}) --- was itself an engineering result rather than
+something the platform provided for free. It is a fair counter-cost to record against
+the approach: the structured engine's correctness guarantee comes with the burden of
+driving a UI-oriented IDE unattended.
+
+\subsection{Diff Minimality}
+\label{sec:eval-diff}
+% --- AI FIRST DRAFT. Numbers measured + instrumented:
+%       results/structured-petclinic-direct-DIFF.json  (structured)
+%       results/text-edit-scripted-DIFF.json           (scripted text-edit)
+%       results/text-edit-petclinic-DIFF.json          (LLM text-edit; only 2 tasks
+%         completed before the Groq free-tier daily token cap). ---
+Beyond pass/fail, the \emph{size} of the change a refactoring produces matters for
+reviewability; small, surgical diffs are easier to audit, and
+\citet{agenticrefactoring2025} note that agent refactorings are valued for being
+localized. Instrumenting the runners to record the source-line delta of each task
+(\Cref{tab:diff}) shows structured execution is consistently the more surgical.
+Across the seven mutating petclinic tasks the structured engine changes a median of
+8 lines (mean 8.3, 58 in total), against the scripted text-edit baseline's median 12
+(mean 21.7, 152 in total --- roughly $2.6\times$ more); the LLM text-edit agent, on
+the two tasks it completed before exhausting the free API tier's daily token budget,
+likewise rewrote more (17 vs 10 lines for the field rename, 6 vs 3 for add-method).
+
+\begin{table}[t]
+  \centering
+  \caption{Source-line delta per task (lines changed\,/\,files touched). Structured
+  and scripted text-edit are complete; the LLM text-edit agent (\texttt{llama-4-scout})
+  completed only two tasks before the free-tier daily token cap (the rest are omitted
+  rather than counted as zero). Read-only tasks (find-usages, read-file) change
+  nothing and are excluded.}
+  \label{tab:diff}
+  \begin{tabular}{@{}lccc@{}}
+    \toprule
+    Task & Structured & Scripted text-edit & LLM text-edit \\
+    \midrule
+    \texttt{pc-rename-001}        & 10\,/\,1 & 12\,/\,1            & 17\,/\,2 (fail) \\
+    \texttt{pc-add-method-001}    & 3\,/\,1  & 1\,/\,1            & 6\,/\,1 \\
+    \texttt{pc-rename-002}        & 8\,/\,3  & 37\,/\,1           & --- \\
+    \texttt{pc-rename-method-001} & 6\,/\,3  & 10\,/\,3 (fail)    & --- \\
+    \texttt{pc-move-001}          & 5\,/\,3  & 64\,/\,1 (fail)    & --- \\
+    \texttt{pc-rename-method-002} & 8\,/\,2  & 20\,/\,3 (fail)    & --- \\
+    \texttt{pc-change-sig-001}    & 18\,/\,6 & 8\,/\,2           & --- \\
+    \midrule
+    \textbf{Total} & \textbf{58} & \textbf{152} & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The contrast is sharpest on the structural tasks. On \texttt{pc-move-001} the
+scripted approach rewrites 64 lines in a single file and still fails to compile,
+whereas the structured move touches 5 lines across 3 files and succeeds; on the
+overload rename the structured engine changes 8 lines (correct) against the
+baseline's 20 (incorrect). The one task where the structured engine changes
+\emph{more} lines is \texttt{pc-change-sig-001} (18 lines across 6 files): correctly
+propagating a new parameter to every call site legitimately requires touching every
+caller. This is the right reading of minimality --- not the fewest lines in the
+absolute, but the minimal \emph{correct} change. Structured edits are confined to a
+symbol's declaration and its genuine references; text approaches make incidental,
+over-broad substitutions that touch more code and, on the structural tasks, break
+it. This also bears on \emph{auditability}: a small, structurally-scoped diff, together
+with the explicit tool-call trace the agent produces (\Cref{ch:design}), is far easier
+for a developer to review and trust than a large free-text rewrite whose intent must be
+reverse-engineered from the changed lines.
+
+\subsection{Root-Cause Analysis of the Text-Edit Failures}
+\label{sec:eval-rootcause}
+% --- AI FIRST DRAFT from docs/EVALUATION.md §7b. This material is strong and
+%     fully grounded in the task definitions; verify file/line references. ---
+The three scripted failures share a single underlying cause: text-level editing
+lacks the reference graph and the type information needed to act on the right
+symbol. Each failure isolates one facet of that deficiency.
+
+\paragraph{Cross-class name collision (\texttt{pc-rename-method-001}).}
+The task renames \texttt{Owner.addVisit(Integer, Visit)} to \texttt{recordVisit}.
+A different class, \texttt{Pet}, independently declares \texttt{addVisit(Visit)}.
+The scripted baseline performs a word-boundary substitution of \texttt{addVisit},
+which cannot distinguish the two declarations: it also renames \texttt{Pet.addVisit}
+and the \texttt{pet.addVisit(visit)} call in \texttt{VisitController}, violating
+the task. IntelliJ's \texttt{RenameProcessor} operates on the specific PSI node
+for \texttt{Owner.addVisit}; its reference index knows that
+\texttt{pet.addVisit(visit)} resolves to \texttt{Pet.addVisit} and leaves it
+untouched. The \emph{surviving-symbol} check detects the difference: after the
+structured rename, \texttt{addVisit} still appears as \texttt{Pet}'s declaration
+and at its call site, whereas after the text-edit rename it has been erased from
+every file.
+
+\paragraph{Implicit same-package dependency (\texttt{pc-move-001}).}
+\texttt{PetValidator} and \texttt{Pet} both live in the \texttt{owner} package, so
+\texttt{PetValidator} references \texttt{Pet} with no \texttt{import} statement;
+likewise \texttt{PetController} uses \texttt{PetValidator} without one. Moving
+\texttt{PetValidator} to the \texttt{system} package requires two new imports to be
+synthesised. The scripted baseline can only rewrite \emph{explicit}, fully
+qualified references, so it leaves both files importless and the project fails to
+compile (\texttt{cannot find symbol: class Pet}). IntelliJ's
+\texttt{MoveClassesOrPackagesProcessor} resolves references through the PSI graph,
+which includes same-package references that have no import line, and inserts the
+required imports automatically.
+
+\paragraph{Overload collision (\texttt{pc-rename-method-002}).}
+\texttt{Owner} declares three overloads of \texttt{getPet}: \texttt{(String)},
+\texttt{(Integer)}, and \texttt{(String, boolean)}. The task renames only the
+\texttt{(String, boolean)} overload to \texttt{findPet}. The scripted substitution
+matches the name \texttt{getPet} and renames all three; the project still compiles
+(the renames are internally consistent), so this failure would be \emph{invisible
+to a compile-only check} --- it is caught only by the surviving-symbol assertion
+that \texttt{getPet} must still be present. IntelliJ resolves the target by typed
+signature (\texttt{Owner\#getPet(String,boolean)}) and renames exactly one
+overload. This case is the clearest illustration of why compilation alone is a
+necessary but not sufficient correctness signal.
+
+\paragraph{Synthesis.} In each case the structured engine succeeds because it acts
+on a typed node in a project-wide reference graph, while the text substitution acts
+on a name string. The deficiency is not that the baseline is poorly engineered but
+that the information it would need --- which class a call belongs to, which
+references resolve without an import, which overload a signature selects --- is
+simply not present in the text. This is the core argument of the thesis made
+concrete: see \Cref{sec:eval-discussion}.
+
+\section{Results: Apache Commons Lang (Second Real Project)}
+\label{sec:eval-commons}
+% --- AI FIRST DRAFT. Measured: results/commons-lang-structured-DIFF.json (structured,
+%     no-LLM, via the sandbox IDE) vs results/commons-lang-scripted-DIFF.json (scripted
+%     text-edit). 4-task suite: benchmarks/tasks_commons_lang.json. ---
+To test whether the structural findings generalise beyond \texttt{spring-petclinic},
+the comparison was repeated on Apache Commons Lang --- an order of magnitude larger
+(246 source files) and from an unrelated domain (a general-purpose utility library).
+A focused four-task suite targets the two discriminating operations
+(\Cref{tab:commons}): an overload-disambiguated rename (rename only the
+three-argument \texttt{StringUtils.replace} overload), a cross-class collision
+(rename \texttt{ArrayUtils.contains(int[],int)} while \texttt{StringUtils.contains}
+must survive), plus a field rename and a find-usages query as controls.
+
+\begin{table}[t]
+  \centering
+  \caption{Apache Commons Lang (4 tasks), measured. Structured executes the IntelliJ
+  PSI operations; scripted text-edit is the no-LLM regex baseline. ``Lines'' is the
+  source-line delta of the change (\Cref{sec:eval-diff}).}
+  \label{tab:commons}
+  \begin{tabular}{@{}llcc@{}}
+    \toprule
+    Task & Operation & Structured & Scripted text-edit \\
+     & & {\footnotesize(direct, no LLM)} & {\footnotesize(no LLM)} \\
+    \midrule
+    \texttt{cl-rename-field-001}       & rename field       & PASS (32 lines)  & PASS (480 lines) \\
+    \texttt{cl-rename-overload-001}    & overload rename    & PASS (356 lines) & \textbf{FAIL} (compile) \\
+    \texttt{cl-rename-cross-class-001} & cross-class rename & PASS (422 lines) & \textbf{FAIL} (compile) \\
+    \texttt{cl-find-usages-001}        & find usages        & PASS (213 refs)  & PASS (40 grep hits) \\
+    \midrule
+    \multicolumn{2}{@{}l}{\textbf{Total}} & \textbf{4/4} & \textbf{2/4} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The outcome replicates the petclinic finding on a far larger, independent codebase:
+the structured engine passes all four tasks, while the scripted text-edit baseline
+fails both structural tasks at the compile stage. The mechanism is identical to
+\Cref{sec:eval-rootcause} --- a word-level substitution of \texttt{replace} also
+rewrites \texttt{java.lang.String\#replace} calls, and \texttt{contains} rewrites JDK
+\texttt{List}/\texttt{String} calls, so the project no longer compiles --- but the
+scale is greater: \texttt{ArrayUtils.contains(int[],int)} is referenced from 56 files,
+each of which the structured rename updates correctly and atomically.
+
+Two observations are specific to scale. First, the find-usages query exposes the gap
+between structural and textual reference-finding directly: the structured engine
+resolves \textbf{213} genuine references to \texttt{CharRange}, whereas the baseline's
+grep returns only 40 textual matches --- the structural index is both more complete
+and free of false positives. Second, diff size behaves differently from the small
+project. On the field rename the structured edit is surgical (32 lines) while the
+regex baseline changes \textbf{480} lines --- it substitutes every lexical occurrence
+of \texttt{calendar} across the library and still compiles, a vivid illustration of
+how a text approach can pass a naive check while making a sweeping, semantically
+unwarranted change. For the ubiquitous \texttt{replace} and \texttt{contains} methods,
+by contrast, the structured edit is itself large (356 and 422 lines): correctly
+updating every caller of a widely-used method legitimately touches many files. The
+robust claim at scale is therefore not ``fewer lines'' but \emph{minimal correct
+change} --- the structured engine changes exactly the genuine references and nothing
+else, whereas the text approach changes a comparable or larger amount incorrectly.
+This second real-world project strengthens external validity: the structural
+discriminators that defeat text editing replicate on an independent codebase an order of
+magnitude larger, and the controlled comparison (\Cref{sec:eval-controlled}) extends the
+evidence to a third, larger project (\texttt{jackson-databind}, 474 files). The central
+findings therefore rest on three independent real-world codebases, not one.
+
+\section{Controlled Comparison: Holding the Model Constant}
+\label{sec:eval-controlled}
+The comparisons above pair the structured engine against a \emph{weaker} text side
+--- a no-LLM regex script, or a small free model. That leaves a confound: does the
+structured engine win because of the action space, or because the text side had a
+weaker planner? The final experiment removes the confound by holding the model
+fixed --- the capable agent, Claude Opus~4.8 (\Cref{sec:eval-modes}) --- and varying
+only the edit primitive, on both real-world projects.
+
+\begin{table}[t]
+  \centering
+  \caption{Controlled comparison: the \emph{same} capable agent (Claude Opus~4.8)
+  driving each edit primitive, scored by the identical oracle. The last column
+  excludes the non-refactoring probes --- a project-wide find-usages query in each
+  project, plus one read probe --- that text editing cannot express as a structured
+  tool call.}
+  \label{tab:controlled}
+  \begin{tabular}{@{}lccc@{}}
+    \toprule
+    Project (tasks) & Structured & Text-edit & Refactoring tasks only \\
+    \midrule
+    spring-petclinic (9)  & 9/9            & 7/9            & 7/7 vs.\ 7/7 \\
+    Commons Lang (4)      & 4/4            & 3/4            & 3/3 vs.\ 3/3 \\
+    jackson-databind (3)  & 3/3            & 2/3            & 2/2 vs.\ 2/2 \\
+    \midrule
+    \textbf{Total}        & \textbf{16/16} & \textbf{12/16} & \textbf{12/12} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+This result is reported in full because it \emph{qualifies the headline}. With a
+capable model in the loop, the two action spaces are \textbf{indistinguishable on
+behaviour-preserving refactoring correctness}: on every rename, move, and
+change-signature task --- including the overload-disambiguated and cross-class
+renames that defeat the regex baseline, and at the scale of \texttt{jackson-databind}
+(a class referenced from 107 files) --- the agent editing raw text reaches the same
+compiling, content-correct result as the agent driving the IDE engine. It does so by
+supplying for itself the very capability the structured engine externalises: reading
+the affected files, enumerating the call sites, and re-compiling to catch its own
+mistakes.
+
+The entire measured gap (16/16 vs.\ 12/16) lies in the tasks where text editing has
+\emph{no corresponding primitive}: a project-wide \texttt{find\_usages} query in each
+of the three projects --- where the text agent can only grep, returning, on Commons
+Lang, 40 lexical hits against the structured index's 213 genuine, type-aware
+references --- plus one read probe scored on a specific tool call. \textbf{On the
+twelve behaviour-preserving refactoring tasks the two action spaces are tied, 12/12}
+--- including \texttt{jackson-databind}'s 551- and 349-reference class renames, which
+the text agent completed by hand. Against a capable text editor, then, the structured
+engine's advantage on \emph{correctness} narrows to the structural \emph{queries} that
+text fundamentally cannot perform.
+
+This sharpens, rather than collapses, the thesis. It locates precisely where the
+structured action space earns its value:
+\begin{itemize}
+  \item \textbf{Driver capability.} The correctness advantage is decisive exactly when
+  the driver \emph{cannot} compensate by reading and re-compiling. The no-LLM regex
+  baseline fails the structural tasks outright (2/4 on Commons Lang,
+  \Cref{tab:commons}); it is the capable model's iterative self-correction --- not the
+  text primitive itself --- that closes the gap.
+  \item \textbf{Correct by construction vs.\ contingently correct.} The structured
+  engine is correct in a single pass (it scored 7/9 here even \emph{without} a feedback
+  loop). The text agent's parity was obtained \emph{with} a compile-and-fix loop;
+  where no build feedback is available, that contingency is what fails.
+  \item \textbf{Structural queries.} Exhaustive, type-aware reference finding has no
+  text-level equivalent, and is a primitive real refactoring workflows depend on.
+  \item \textbf{Operation count and precision.} The structured agent completes each
+  refactoring in a single mutating call that touches only the typed references. A
+  capable text agent is, perhaps surprisingly, comparably economical in raw
+  \emph{operations} --- it renamed the 551-reference \texttt{ClassUtil} across 107
+  files with two bulk substitutions and two compile checks. But a bulk substitution
+  matches by \emph{name}: it can also rewrite comments, strings, and unrelated
+  identifiers that share the name, and ``it compiled'' does not establish that it did
+  not (cf.\ the regex baseline's 480-line over-broad rename, \Cref{tab:commons}). The
+  structured edit is precise by construction; the text edit is a heuristic that
+  happened to be correct here.
+\end{itemize}
+
+\section{Threats to Validity}
+\label{sec:eval-threats}
+% --- AI FIRST DRAFT. Required for the top band; verify each claim holds for your
+%     final runs and add/remove threats honestly. ---
+\paragraph{Construct validity.} The sample project was \emph{deliberately designed}
+to expose cross-file weaknesses of text editing; it is an instrument for isolating
+the phenomenon, not a representative codebase, and its results should be read as
+such. The \texttt{spring-petclinic} suite mitigates this by using an external,
+real-world project the author did not write, but the nine tasks were still chosen
+by the author and are not a random sample of maintenance work.
+
+\paragraph{Internal validity.} The scripted text-edit baseline is an intentional
+lower bound and does not, on its own, support a claim about LLM agents; the LLM
+text-edit agent (\Cref{sec:eval-petclinic}) is the fair comparator and the basis
+for any claim about agents. Correctness is measured by compilation plus content
+checks rather than by behavioural (test-suite) equivalence, so a change that
+compiles and passes the content checks but alters runtime behaviour would not be
+caught; the operations evaluated are, however, all behaviour-preserving by
+construction in the structured engine.
+
+\paragraph{External validity.} Four projects and one language (Java; Kotlin
+symbol-creation is implemented but not benchmarked) are evaluated, over a bounded set
+of operation types. Three are real-world codebases the author did not write
+(\texttt{spring-petclinic}; Apache Commons Lang at 246 source files; and
+\texttt{jackson-databind} at 474), and the controlled capable-agent comparison
+(\Cref{sec:eval-controlled}) was run on all three --- so the central findings are
+\emph{measured} on independent projects at scale, including class renames touching
+107 files, not merely hypothesised. Two caveats remain. The tasks were chosen by the
+author rather than sampled randomly from real maintenance history. And correctness is
+judged by compilation plus content checks, not behavioural equivalence; in particular,
+a capable text agent's bulk substitution can be \emph{over-broad} (rewriting comments
+or strings) yet still compile, so the structured engine's precision advantage
+(\Cref{sec:eval-controlled}) is only partly captured by a pass/fail compile oracle and
+is evidenced separately by diff size (\Cref{sec:eval-diff}).
+
+\paragraph{Model validity.} Agent results may be specific to the models used. The
+capable agent is Claude Opus~4.8; the weak arms are qwen2.5:7b (structured) and
+\texttt{llama-4-scout} (text-edit). The qualitative pattern was consistent across the
+three projects --- the capable agent reaches parity on refactorings via either
+primitive, while the action space is decisive for the weak/scripted drivers --- but it
+rests on a single capable model.
+That said, the architectural claim does not depend on Claude specifically: the tool API
+is model-agnostic (\Cref{sec:design-mcp}), so any function-calling model can drive it,
+and re-running the capable arm on a second frontier model (for example a GPT-class model
+through the OpenAI-compatible provider) is the natural way to confirm the observed
+pattern is not specific to one model (\Cref{ch:conclusion}).
+
+\section{Discussion}
+\label{sec:eval-discussion}
+% --- This section is YOUR interpretation. A scaffold of the factual frame is
+%     drafted; the claims and their hedging are yours to own. ---
+The measured results support a \emph{refined} version of the original thesis, and
+it is worth stating precisely what they do and do not show.
+
+Against the baselines an automated system would otherwise fall back on --- a scripted
+text editor, or a small free model --- the structured engine wins clearly on
+correctness: 9 of 9 versus 6 of 9 on spring-petclinic, and the same pattern on Apache
+Commons Lang (4/4 versus 2/4), with the gap sitting exactly on the reference-graph and
+type-dependent tasks. For drivers of that kind --- which is the regime of cheap, local,
+or rate-limited automation --- the action space is decisive.
+
+The controlled comparison then adds the honest qualifier. Given a \emph{capable} agent
+--- Claude Opus~4.8, with a compile-and-fix loop --- raw text editing reaches the same
+compiling, content-correct result on every behaviour-preserving refactoring, tied 12 of
+12 across the three projects, even at the scale of jackson-databind, where it renamed a
+551-reference class by hand. I therefore do not claim raw-correctness superiority for
+the structured engine over a frontier model: the data does not support it, and stating
+so plainly is part of the contribution.
+
+What the data \emph{does} support is narrower but solid. First, a project-wide,
+type-aware structural query such as exhaustive \texttt{find\_usages} has no text-level
+equivalent --- it is the one task the text agent fails in every project, including the
+capable run at scale (2 of 3 on jackson-databind, the single miss being precisely that
+query). Second, the structured edit is correct \emph{by construction}: it touches only
+typed references, never comments or strings, and needs no build-feedback loop, whereas
+the capable text agent's parity was \emph{contingent} on having one. Third, it reaches
+the result in far fewer, semantically-scoped operations. Crucially, these advantages are
+largest exactly where the driving agent is weakest --- scripted, small, or unverified
+--- so the value of the structured action space rises as the driver's capability, or its
+access to feedback, falls.
+
+One dimension this evaluation leaves open is cost. The efficiency advantage is argued
+here from operation counts and token footprint rather than measured directly; a natural
+next step is to quantify the tokens consumed and the wall-clock cost of each approach
+across several models, which would establish how large the structured engine's cost
+advantage actually is and whether it persists as models improve.

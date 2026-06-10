@@ -75,6 +75,9 @@ tasks {
                 // as a catchable ConflictsInTestsException instead of a modal dialog that would
                 // block the EDT forever with no user to click it.
                 "-Dide.performance.skip.refactoring.dialogs=true",
+                // Auto-trust the opened project so unattended (overnight / headless) runs are
+                // not blocked by the modal "Trust and Open Project?" dialog (no user to click it).
+                "-Didea.trust.all.projects=true",
             )
         })
     }

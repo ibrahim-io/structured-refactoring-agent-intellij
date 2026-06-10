@@ -1,0 +1,198 @@
+% =============================================================================
+%  CHAPTER 1 — INTRODUCTION
+%
+%  >>> MOTIVATION + REPORT STRUCTURE are an AI-ASSISTED FIRST DRAFT (from your
+%      docs/PROJECT_CONTEXT.md + RELATED_WORK.md). Rewrite in your own voice,
+%      verify citations, and disclose in the Declarations page.
+%  >>> OBJECTIVES, RESEARCH-QUESTION FRAMING, and CONTRIBUTIONS are left for YOU
+%      — they are your claims and the heart of the Framing mark (15%). I'll edit
+%      what you write, but these should not be ghost-drafted.
+%  RUBRIC: Framing of Research Problem (15%). BUDGET: ~4-6 pages.
+% =============================================================================
+\chapter{Introduction}
+\label{ch:intro}
+
+\section{Motivation}
+\label{sec:intro-motivation}
+
+Software spends most of its life being maintained rather than written, and a
+large share of that maintenance is \emph{refactoring}: behaviour-preserving
+restructuring that keeps a codebase readable and able to evolve. The arrival of
+capable large language models (LLMs) inside the IDE has changed how developers
+approach such work --- controlled studies report that AI pair-programmers let
+developers complete tasks substantially faster \citep{copilotproductivity2023}
+--- and LLMs are now demonstrably able to \emph{identify} useful refactorings
+and describe how to carry them out \citep{cordeiro2024refactoring,
+potentialllm2024}.
+
+The difficulty lies not in deciding \emph{what} to refactor but in
+\emph{applying} the change correctly. When an LLM performs a refactoring by
+generating modified source text, it must itself locate and update every affected
+site. In practice it routinely misses usages in other files
+(\emph{scope blindness}), breaks import statements, introduces compilation
+errors, or produces code that compiles but is semantically wrong
+\citep{llmrefactorlimits2025}. These are not occasional lapses: on a
+repository-level benchmark of 1{,}099 real, behaviour-preserving Java
+refactorings, the strongest evaluated LLM reaches a pass rate of only 41.6\%
+\citep{swerefactor2025}. The model is reliable at \emph{what} and unreliable at
+\emph{how} --- precisely because ``how'' has been framed as the problem of
+writing correct code text.
+
+Yet that problem is already solved, just not by the model. Every modern IDE
+contains a refactoring engine that performs renames, moves, signature changes,
+and extractions over a typed program model, updating all references, imports,
+and occurrences atomically and correctly by construction. The weakness of
+current LLM agents is that they do not use it for writes: agent toolkits expose a
+general-purpose textual \texttt{edit} action \citep{sweagent2024}, and even
+systems that exploit the abstract syntax tree do so only to \emph{read} context
+before emitting a text patch \citep{autocoderover2024}. Where the IDE engine
+\emph{is} used for execution, as in EM-Assist \citep{emassist2024}, it is wired
+to a single operation inside the IDE, with no interface an external agent could
+call.
+
+This project argues that an LLM agent should be \emph{decoupled} from the act of
+writing code: the model should decide \emph{what} to refactor, and the IDE's
+refactoring engine should decide and execute \emph{how}. Concretely, it presents
+an IntelliJ~IDEA plugin that exposes the IDE's structured refactoring operations
+--- rename, move, change-signature, safe-delete, inline, extract, and symbol
+creation --- through a localhost tool API that any function-calling LLM can
+drive. Because every mutation is performed by IntelliJ's PSI engine rather than
+by text substitution, the result is correct with respect to the IDE's semantic
+model independently of the quality of the model's textual output.
+This report defends a single claim: that the IDE's structured operations are a
+better action space for an LLM refactoring agent than source text --- not because
+a capable model cannot edit text correctly, but because routing every edit
+through IntelliJ's PSI engine makes project-wide, behaviour-preserving refactoring
+of real-world Java codebases correct \emph{by construction} and more efficient,
+and uniquely supports the project-wide structural queries (such as exhaustive
+reference finding) that text editing cannot perform. The advantage is largest
+exactly where text editing is least reliable: under weaker models, and for
+refactorings whose correctness depends on a project-wide reference or type graph.
+
+\section{Objectives}
+\label{sec:intro-objectives}
+% YOUR SECTION. Turn your research questions (docs/EVALUATION.md) into explicit,
+% testable objectives. List only what the evaluation actually measures; move the
+% developer study (RQ4) to Future Work if you do not run it.
+This project pursues four objectives, each phrased so that it is tested directly
+by the evaluation in Chapter~\ref{ch:eval}.
+
+\begin{enumerate}
+  \item \textbf{Expose the IDE's refactoring engine as an agent action space.}
+  Design and implement an IntelliJ~IDEA plugin that makes the platform's
+  PSI-backed operations --- rename, move, change-signature, safe-delete, inline,
+  extract, and symbol creation --- callable by an external function-calling LLM
+  through a localhost tool API.
+  \emph{(Substantiated in Chapters~\ref{ch:design}--\ref{ch:impl}.)}
+
+  \item \textbf{Demonstrate behaviour-preserving correctness on real-world code.}
+  Show that refactorings executed through this action space are applied
+  correctly on two real-world Java projects (spring-petclinic and Apache Commons
+  Lang), measured by per-task pass rate under compilation and symbol-survival
+  checks. \emph{(Chapter~\ref{ch:eval}.)}
+
+  \item \textbf{Establish where structured execution is \emph{necessary}.}
+  Isolate and measure the refactoring classes on which text-level editing fails
+  --- cross-file moves requiring import repair, overload-safe and cross-class
+  renames, and project-wide usage discovery --- to show where the structured
+  approach is not merely tidier but required for correctness.
+  \emph{(Chapter~\ref{ch:eval}, root-cause analysis.)}
+
+  \item \textbf{Compare against a text-editing baseline.}
+  Evaluate the structured approach against both a scripted text editor and an LLM
+  text-edit agent on the same tasks, comparing correctness and the minimality of
+  the resulting diffs. \emph{(Chapter~\ref{ch:eval}.)}
+\end{enumerate}
+
+\section{Research-Question Framing}
+\label{sec:intro-rqs}
+% YOUR SECTION. Frame the work as AI-systems research, not just a plugin: e.g.
+% "how should an LLM agent's action space be designed for safe, reliable,
+% project-wide code transformation?" Cite the ACI abstraction \citep{sweagent2024}
+% and the constrained-action-space taxonomy \citep{demystifying2025}.
+We frame this work not as a plugin but as a question about \emph{agent design}.
+Under the agent--computer-interface (ACI) abstraction \citep{sweagent2024}, an
+LLM agent's competence is governed less by raw model capability than by the
+\emph{action space} it is given --- the set of operations through which it
+observes and changes the world; recent analysis of code agents makes the same
+point, treating the design of a constrained, well-typed action space as a
+primary determinant of reliability \citep{demystifying2025}. Conventional coding
+agents take \emph{source text} as their action space. This work asks what
+changes when the action space is instead the IDE's structured refactoring
+engine:
+
+\begin{description}
+  \item[RQ1 (Correctness).] Does constraining an agent's action space to the
+  IDE's structured, AST-aware refactoring operations --- rather than free-form
+  text edits --- improve the correctness of behaviour-preserving, project-wide
+  refactorings on real-world codebases? \emph{(Objectives~2, 4.)}
+
+  \item[RQ2 (Necessity).] For which classes of refactoring is a structured
+  action space not merely beneficial but \emph{necessary} --- i.e.\ where does
+  text-level editing fail for reasons intrinsic to its action representation
+  rather than to model capability? \emph{(Objective~3.)}
+
+  \item[RQ3 (Cost).] What does this safety cost? Does routing every edit through
+  the IDE engine change the minimality of the resulting diffs and the agent's
+  interaction cost (tool calls and turns) relative to a text-editing agent?
+  \emph{(Objective~4.)}
+\end{description}
+
+\section{Contributions}
+\label{sec:intro-contributions}
+% YOUR SECTION. Adapt the novelty claims in docs/PROJECT_CONTEXT.md, but HEDGE
+% absolute "first/only" claims to "to the best of our knowledge" and acknowledge
+% contemporaneous work (e.g. the JetBrains MCP server). Each contribution should
+% map to a chapter/section.
+The contributions of this report are:
+
+\begin{enumerate}
+  \item \textbf{A structured-refactoring tool API for LLM agents.} An
+  IntelliJ~IDEA plugin that exposes the platform's PSI-backed refactoring
+  operations through a model-agnostic, function-calling HTTP interface, letting
+  an external LLM \emph{execute} --- not merely propose --- project-wide
+  refactorings. To the best of our knowledge this is the first general-purpose
+  interface of its kind for arbitrary function-calling agents; it is
+  contemporaneous with, and complementary to, the JetBrains MCP server.
+  \emph{(Chapters~\ref{ch:design}--\ref{ch:impl}.)}
+
+  \item \textbf{A headless-execution technique for IDE refactorings.} A method
+  for making \texttt{BaseRefactoringProcessor}-based refactorings fully
+  non-interactive --- suppressing the preview, conflict, and error dialogs that
+  otherwise block an unattended IDE --- so that an agent can drive them without
+  a human at the keyboard. \emph{(Chapter~\ref{ch:impl}.)}
+
+  \item \textbf{An evaluation methodology and benchmark.} A reproducible harness
+  that compares structured execution against both a scripted text editor and an
+  LLM text-edit agent on real-world Java projects, scoring correctness
+  (compilation and symbol survival) and diff minimality.
+  \emph{(Chapter~\ref{ch:eval}.)}
+
+  \item \textbf{An empirical characterisation of where the action space matters.}
+  Evidence that text-level editing fails on reference-graph- and type-dependent
+  refactorings --- cross-file moves with import repair, overload-safe and cross-class
+  renames, and project-wide usage discovery --- for scripted and weaker-model drivers;
+  that a \emph{capable} agent reaches parity on those refactorings; and that the
+  structured engine's durable advantages are therefore correctness by construction, the
+  structural queries text editing cannot express, and robustness to the driver's
+  capability. \emph{(Chapter~\ref{ch:eval}.)}
+\end{enumerate}
+
+\section{Report Structure}
+\label{sec:intro-structure}
+
+The remainder of this report is organised as follows.
+Chapter~\ref{ch:background} reviews the relevant literature on LLM-driven
+refactoring, program-transformation agents, AST-safe refactoring, and tool use,
+and identifies the gap this work addresses.
+Chapter~\ref{ch:design} presents the design: the decoupling of model reasoning
+from IDE execution, the tool API, and the rationale behind the key design
+decisions.
+Chapter~\ref{ch:impl} describes the implementation, including how each operation
+delegates to IntelliJ's refactoring engine and the principal engineering
+challenges overcome.
+Chapter~\ref{ch:eval} evaluates the system against a text-editing baseline on
+two benchmark projects, reporting correctness, efficiency, and a root-cause
+analysis of the baseline's failures.
+Chapter~\ref{ch:conclusion} concludes with a reflection on the results, their
+broader impact, and directions for future work.

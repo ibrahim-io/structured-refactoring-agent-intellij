@@ -1,0 +1,180 @@
+% =============================================================================
+%  CHAPTER 6 — CONCLUSION, REFLECTION & FUTURE WORK
+%  SOURCE:   docs/EVALUATION.md §9 (refined hypothesis), §10 (developer study)
+%  RUBRIC:   Evaluation & Reflection (20%)
+%  BUDGET:   ~4-6 pages
+%  TOP BAND: mature self-critical judgement + broader impact analysed with depth.
+%
+%  >>> DRAFTED HERE (AI first draft, grounded in your docs — verify, then edit):
+%        - Summary of Contributions (calibrated to MEASURED results)
+%        - Limitations, Future Work (incl. the RQ4 study design from §10)
+%  >>> YOURS TO WRITE (\writeme — these are judgement parts, per your working
+%      agreement): Reflection, Broader Impact. Scaffolds are provided to react to.
+% =============================================================================
+\chapter{Conclusion and Reflection}
+\label{ch:conclusion}
+
+% --- AI FIRST DRAFT. Edit into your own voice; verify every claim is MEASURED. ---
+This project set out to test a single architectural proposition: that an LLM
+agent performing refactoring should be \emph{decoupled} from the act of writing
+code --- deciding \emph{what} to change while delegating \emph{how} to the IDE's
+structured refactoring engine. \Cref{ch:design,ch:impl} realised this as an
+IntelliJ plugin that exposes rename, move, change-signature, safe-delete, inline,
+extract, and symbol-creation operations through a localhost tool API that any
+function-calling model can drive, and \Cref{ch:eval} evaluated it against a
+text-editing baseline.
+
+\section{Summary of Contributions}
+\label{sec:concl-contributions}
+% --- AI FIRST DRAFT. Calibrate each bullet to what you actually MEASURED. ---
+The work makes the following contributions, each substantiated earlier in the
+report:
+\begin{itemize}
+  \item \textbf{A structured-refactoring tool API for LLM agents.} An IntelliJ plugin
+    (\Cref{ch:design}--\ref{ch:impl}) that exposes IntelliJ's PSI refactoring processors
+    through a model-agnostic, function-calling interface (HTTP and MCP), letting an
+    external agent \emph{execute} project-wide refactorings that are correct by
+    construction rather than emit text. To the best of our knowledge this is the first
+    general-purpose interface of its kind, contemporaneous with the JetBrains MCP server.
+  \item \textbf{A headless-execution technique for IDE refactorings.} A method for
+    driving \texttt{BaseRefactoringProcessor}-based operations --- and editor-bound ones
+    such as extract-method --- fully non-interactively (\Cref{ch:impl}), suppressing the
+    dialogs and editor dependencies that otherwise make them uncallable by an unattended
+    agent.
+  \item \textbf{A reproducible benchmark and a controlled comparison.} A compile-anchored
+    validation harness (\Cref{sec:eval-validation}) and task suites over three real-world
+    Java projects (\Cref{ch:eval}), including a model-held-constant comparison that
+    isolates the edit primitive from the driving model's capability.
+  \item \textbf{An empirical characterisation of where the action space matters.}
+    Evidence (\Cref{sec:eval-rootcause,sec:eval-controlled}) that text-level editing
+    fails on reference-graph- and type-dependent refactorings for scripted and
+    weaker-model drivers, that a capable agent reaches parity on those refactorings, and
+    that the structured engine's durable advantages are its structural queries,
+    correctness by construction, and robustness to the driver's capability.
+\end{itemize}
+
+\section{Reflection}
+\label{sec:concl-reflection}
+% --- YOUR SECTION (judgement). The refined hypothesis in EVALUATION.md §9 is
+%     genuinely self-critical — that honesty is what earns marks here. ---
+The most valuable part of this project, in retrospect, was being proven partly wrong. I
+set out expecting the structured engine to be straightforwardly \emph{more correct} than
+text editing, and against the scripted and weak-model baselines it is. But the controlled
+comparison refined that into something more honest: a capable model edits text correctly
+too, even at scale, when it has a compile-and-fix loop, so the structured engine's
+durable advantage is not raw correctness but that it is correct \emph{by construction},
+supports queries text cannot express, and needs no such loop. Delegating to IntelliJ's
+own processors gave that correctness for free on exactly the cases the baselines failed
+--- the part of the design that worked best was the part I wrote least of. Starting
+again, I would run the cross-model and behavioural (test-based) validation earlier
+rather than leaning on compilation and content checks, since those are the experiments
+that would most sharpen the claim.
+
+\section{Broader Impact}
+\label{sec:concl-impact}
+% --- YOUR SECTION (judgement). Required from the 60% band up. ---
+A broader implication of this work is that, as capable agents become commonplace, the
+differentiator shifts from the models themselves towards the \emph{infrastructure} they
+act through --- the structured, verifiable tool layers that let an agent change the
+world reliably rather than by best-effort generation. Framed as a safety property, this
+is the value of constraining the action space: a small, typed, correct-by-construction
+set of operations is safer than an unconstrained ``edit any text'' action, because whole
+classes of silently-wrong change simply cannot be expressed
+\citep{demystifying2025, sweagent2024}. The benefit is greatest for \emph{less} capable
+models, which cannot reason their way around a missing guarantee --- so this kind of
+infrastructure is a route to making cheaper, local, or open models usefully reliable,
+not only to making frontier models marginally better. The pattern is not specific to
+refactoring: the same argument extends to CAD and engineering tooling, to reliable code
+generation, and to the widening range of MCP-exposed tools across domains as different
+as travel and design.
+
+This shifts what a developer must verify. When the edit itself is performed by a
+semantics-preserving engine, attention moves from ``did the change apply correctly?'' to
+``was this the right change to ask for?'' --- a genuine reduction in the surface for
+silently-wrong edits to reach a codebase. The same property cuts both ways, however. A
+guarantee that the mechanics are correct can encourage \emph{over}-trust, with
+developers reviewing agent-applied changes less carefully precisely because they compile
+and look safe; and it concentrates influence in whoever builds and controls the tool
+layer, since every agent that depends on it inherits its blind spots. Infrastructure
+that makes automated change safer also makes large automated change easier --- a
+responsibility as much as a capability.
+
+Finally, the efficiency dimension carries a sustainability angle: performing a
+refactoring in a single structured operation rather than many file reads and per-site
+edits reduces the API round-trips, token cost, and therefore the energy spent per task
+--- a small but real consideration as agentic workflows scale up.
+
+\section{Limitations}
+\label{sec:concl-limitations}
+% --- AI FIRST DRAFT. Keep these honest and aligned with sec:eval-threats. ---
+The evaluation has several limitations, stated here so that the contributions are
+not overread. The benchmark covers three real-world projects but a single language (Java; Kotlin
+symbol-creation is implemented but not benchmarked), and the operation set, while
+spanning seven families, is not exhaustive. Correctness is established by compilation
+and disk-state checks rather than by behavioural (test-suite) equivalence, so a change
+that compiles and passes the content checks but alters runtime behaviour would not be
+caught. The original expectation --- that the structured approach's correctness
+advantage would \emph{grow} on large codebases, where an LLM can no longer hold every
+file in context --- was tested directly (on Apache Commons Lang and jackson-databind, up
+to 474 files) and was \emph{not} borne out for a capable agent: such an agent reached
+parity even at that scale (\Cref{sec:eval-controlled}), so the structured engine's
+advantage lies in structural queries and correctness-by-construction rather than in raw
+scale. The agent arms were also driven by a single capable model (Claude Opus~4.8);
+confirming that the pattern is not specific to one model is left to future work, as is
+the human-factors question.
+
+\section{Future Work}
+\label{sec:concl-future}
+% --- AI FIRST DRAFT from EVALUATION.md §10. The RQ4 study design is yours; this
+%     frames it as planned-not-done. ---
+Several directions follow directly from the limitations above.
+
+\paragraph{Controlled developer study (RQ4).} The most direct extension is the
+human-factors study the evaluation deferred. The planned design compares three
+conditions --- manual IntelliJ refactoring, an in-IDE chat assistant performing
+text edits, and the structured-refactoring agent --- on a fixed set of maintenance
+tasks performed by 10--15 participants on an unfamiliar Java project, measuring
+time to completion, the number of corrective undo actions, and post-task cognitive
+load (NASA-TLX), with a short interview probing whether participants trusted each
+change without manually verifying it. This would test whether the structural
+correctness guarantees translate into measurable gains in developer effort and
+trust, which the present, purely technical, evaluation cannot establish.
+
+\paragraph{Cross-model studies.} The scale comparison was carried out as part of this
+work --- on Apache Commons Lang and jackson-databind, up to 474 files
+(\Cref{sec:eval-controlled}) --- so the open question is no longer scale but
+\emph{generality across models}. Re-running the capable-agent arm on other frontier
+models (for example a GPT- or Gemini-class model, through the same model-agnostic tool
+interface) would establish whether the observed pattern --- parity on refactoring
+correctness, with the structured advantage concentrated in structural queries and
+by-construction safety --- holds beyond Claude, as the architecture intends.
+
+\paragraph{Broader operation and language coverage.} Several higher-level operations
+are implemented but not yet benchmarked (pull-up and push-down member,
+make-method-static, type migration); benchmarking these, adding the operations still
+missing (e.g.\ extract-interface, encapsulate-field), and exercising the existing Kotlin
+support would broaden the claim beyond the rename, move, and change-signature core
+evaluated here. \paragraph{IDE-agnostic backend.}
+Because the agent interacts only through the tool API, the same interface could in
+principle be backed by another language service (e.g.\ an LSP server or a
+different IDE), which would generalise the architecture beyond IntelliJ.
+
+\paragraph{Stronger evaluation oracles.} Correctness here is established by
+compilation and content checks; two complementary oracles would deepen it. First,
+structural-quality analysis with DesigniteJava --- the methodology of
+\citet{agenticrefactoring2025} --- would quantify whether structured refactorings
+preserve or improve design-smell and complexity metrics, making the results
+directly comparable to that study (and testing the expectation that
+behaviour-preserving operations introduce no new smells). Second, the
+differential-fuzzing approach of \citet{difffuzzing2026} would verify behavioural
+equivalence beyond compilation --- a behavioural complement to the structural
+guarantees the engine already provides by construction.
+
+My own view is that AI-assisted refactoring should become both more widespread and more
+\emph{language-aware}. Most agentic coding today happens at the command line and edits
+code as text; the natural next step is to wire these agents, by default, into the
+structured engine of whatever language they are working in --- the PSI for Java and
+Kotlin, an equivalent service elsewhere --- so that whenever the language is known, edits
+flow through its abstract syntax tree rather than through free text. I believe that shift
+could meaningfully improve how safely and correctly code is written, precisely as more of
+it comes to be written with AI.

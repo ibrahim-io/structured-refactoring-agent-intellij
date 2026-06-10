@@ -1,0 +1,254 @@
+% =============================================================================
+%  CHAPTER 2 — BACKGROUND & RELATED WORK
+%
+%  >>> AI-ASSISTED FIRST DRAFT (generated from YOUR docs/RELATED_WORK.md). <<<
+%  This is raw material, NOT submittable text. Before submission you MUST:
+%    1. Rewrite it in your own voice (the markers quiz you on this in the viva).
+%    2. Verify every citation against the actual paper — several entries in
+%       references.bib are marked `VERIFY` (authors, venues, the SWE-Refactor ID
+%       and its 41.6% figure, on which your motivation depends).
+%    3. Disclose AI drafting assistance in the Declarations page (main.tex).
+%  RUBRIC: Framing of Research Problem (15%). BUDGET: ~8-12 pages.
+% =============================================================================
+\chapter{Background and Related Work}
+\label{ch:background}
+
+\section{Technical Background}
+\label{sec:bg-technical}
+
+This section introduces the concepts a reader needs to follow the rest of the
+report: the structural representation an IDE maintains for source code, the
+refactoring engine that operates on it, and the tool-use mechanism by which a
+large language model (LLM) can invoke external operations.
+
+\paragraph{Program structure and the PSI.} Modern IDEs do not treat source code
+as text. IntelliJ IDEA maintains a \emph{Program Structure Interface} (PSI): a
+typed abstract syntax tree augmented with a project-wide reference index that
+resolves each identifier to its declaration and each declaration to all of its
+usages. Because the PSI encodes types, scopes, and references rather than
+character offsets, an operation expressed over it can reason about \emph{which}
+\texttt{addVisit} a call refers to, or \emph{which} overload of \texttt{getPet}
+a signature selects --- information that is absent from the raw text.
+
+\paragraph{Refactoring engines.} A refactoring is a behaviour-preserving
+transformation of a program. IntelliJ implements each refactoring as a
+\emph{processor} (e.g.\ \texttt{RenameProcessor},
+\texttt{MoveClassesOrPackagesProcessor}, \texttt{ChangeSignatureProcessor})
+that mutates the PSI and propagates the change to every dependent reference,
+import, and --- where requested --- comment and string occurrence, atomically.
+The correctness of the result follows from the engine's semantic model, not from
+the caller. This is the foundation of the design: by constraining the agent to \emph{only}
+drive these PSI-backed operations --- never to edit source text directly ---
+correctness no longer depends on the agent's own reasoning about where a change
+must ripple. The agent need only choose \emph{which} refactoring to apply; the
+engine then guarantees that the rename, signature change, or move is
+behaviour-preserving by definition, propagating to every dependent reference
+across the codebase atomically and without the missed call sites, broken imports,
+or other unintended side effects that ad hoc text editing risks.
+
+\paragraph{LLM tool use and the Model Context Protocol.} Contemporary LLMs
+support \emph{function calling}: given a set of named tools described by a JSON
+schema, the model emits a structured call (a tool name and a JSON argument
+object) that the host application executes, returning the result for the model
+to continue reasoning. The Model Context Protocol (MCP) standardises this
+exchange so that any compliant agent can discover and call a server's tools.
+This project exposes IntelliJ's refactoring engine through exactly such a
+tool interface.
+
+\section{LLM-Driven Code Refactoring}
+\label{sec:bg-llm-refactoring}
+
+A growing body of work evaluates how well LLMs can refactor code;
+\citet{aicodeopt2025} survey this landscape across machine-learning,
+reinforcement-learning, and code-model techniques and identify trust and
+explainability as the principal barriers to adoption in production --- barriers
+that a structurally-safe, behaviour-preserving execution layer is well placed to
+lower.
+\citet{cordeiro2024refactoring} study StarCoder2, GPT-4o, GPT-4o-mini, LLaMA~3
+and DeepSeek-v3 across thirty open-source Java projects, and find that LLMs
+outperform developers on systematic, repetitive refactorings but fall short on
+context-heavy, architectural ones --- precisely the cases that depend on
+project-wide reference information. \citet{potentialllm2024} examine 180
+real-world refactorings across twenty projects and report that ChatGPT
+identifies only 28 of them unaided, yet reaches an 86.7\% success rate once the
+refactoring sub-category is pre-specified. This last result is important for the
+present work: constraining the model to a fixed menu of operation types --- as a
+typed tool API does --- substantially improves reliability over free-form
+generation.
+
+The clearest statement of the problem comes from repository-level benchmarks.
+\citet{swerefactor2025} assemble 1{,}099 developer-written, behaviour-preserving
+Java refactorings validated by compilation, tests, and RefactoringMiner, and
+report a best LLM pass rate of only \textbf{41.6\%}. This ceiling on
+text-generation approaches is the empirical motivation for delegating execution
+to an IDE. Complementarily, \citet{llmrefactorlimits2025} catalogue the failure
+modes behind that ceiling --- hallucinated edits, broken semantics, and
+\emph{scope blindness} (missing usages in other files) --- and identify IDE
+integration as the natural mitigation. This work targets the \emph{execution} step those failure modes share: it removes
+free-text generation from the write path entirely, so the scope-blind,
+semantically-unsafe edits behind that ceiling --- missed cross-file usages, broken
+imports, wrong-overload renames --- cannot arise, because every change is applied by
+an AST-aware engine that propagates it across the whole codebase by construction.
+
+\section{Program Transformation Agents}
+\label{sec:bg-agents}
+
+A parallel line of work embeds LLMs in autonomous agents that act on a codebase
+through a tool interface. \citet{sweagent2024} introduce the Agent--Computer
+Interface (ACI): a small, shell-like toolset (view, search, edit, run) through
+which an agent resolves real GitHub issues, achieving 12.5\% on SWE-bench at
+release. The ACI is the closest architectural analogue to this project's HTTP
+tool surface, but its \texttt{edit} tool performs raw text replacement with no
+awareness of program structure. \citet{openhands2025} generalise this to a
+sandboxed platform in which agents drive a containerised operating system
+(shell, browser, Python REPL); the action space is maximally general but
+correspondingly unconstrained. \citet{autocoderover2024} narrow the focus to
+program repair, using AST-backed code-search APIs (class signatures, method
+bodies, call graphs) to locate context before generating a patch; notably,
+however, the AST is used only for \emph{read-only retrieval}, while the patch is
+still applied as a text diff. Across this line of work the pattern is
+consistent: structure, where used at all, informs \emph{reading}, never
+\emph{writing}.
+
+% --- AI FIRST DRAFT (from arXiv:2511.04824 + your research notes). Verify the
+%     figures against the paper and edit into your voice. ---
+The most direct empirical evidence for how such agents refactor in practice comes
+from \citet{agenticrefactoring2025}, who conduct the first large-scale study of
+production coding agents (Codex, Cursor, Devin, Claude Code), detecting 15{,}451
+refactorings across 14{,}988 real Java commits with RefactoringMiner and assessing
+their structural impact with DesigniteJava. Two of their findings directly motivate
+the present work. First, although agents refactor in 26.1\% of commits, they
+overwhelmingly perform \emph{localized, low-level} edits --- change-variable-type
+(11.8\%), rename-parameter (10.4\%), and rename-variable (8.5\%) dominate --- a
+``preference for localized improvements over the high-level design changes common
+in human refactoring''. The structural operations agents largely avoid (move,
+extract, signature change) are precisely those where free-text editing is least
+safe, as the present evaluation confirms (\Cref{ch:eval}); a structured execution
+layer is what makes them safe to attempt. Second, their quality analysis finds only
+\emph{small} structural gains (e.g.\ a median reduction of 15.25 class lines of
+code) and reports that agents ``fail to meaningfully reduce actual design
+smells''; moreover 53.9\% of the detected refactorings occur in \emph{tangled}
+commits with no explicit refactoring intent --- applied incidentally alongside
+other edits rather than as deliberate, isolated transformations. The study does
+not establish that these edits compile or preserve behaviour. These are precisely
+the guarantees an IDE-backed execution layer provides by construction, and the
+intentful, single-purpose nature of a typed refactoring operation is what makes
+each change individually reviewable rather than entangled with unrelated edits.
+This project therefore complements their descriptive account of \emph{what} agents
+refactor with a prescriptive question: does constraining the agent's write action
+to structured, semantics-preserving operations improve correctness, reproducibility,
+and auditability?
+
+\section{AST-Safe and Structured Refactoring with AI}
+\label{sec:bg-structured}
+
+The systems most closely related to this project combine an LLM with an IDE's
+refactoring engine so that execution is structurally safe. \citet{emassist2024}
+present EM-Assist, an IntelliJ plugin in which an LLM suggests code ranges to
+extract and IntelliJ's PSI engine validates and performs the extraction,
+reaching 53.4\% Recall@5 on 1{,}752 real refactorings with a 94.4\% positive
+developer rating. EM-Assist is the most architecturally similar prior system and
+the natural baseline for comparison; its limitation is that it is
+\emph{single-operation} (extract-method only) and hardwired inside the IDE, with
+no external interface an agent could call.
+\citet{movemethod2025} combine LLM suggestions with IDE static analysis and
+retrieval over prior refactorings to recommend Move Method, reaching 73\%
+Recall@1 --- again a single operation, exposed through no agent-callable API.
+\citet{mantra2025} orchestrate multiple LLM agents with contextual RAG and
+self-repair for extract-method, with 82.8\% of outputs compiling and passing
+tests; the pipeline is sophisticated but still produces text-level
+replacements rather than driving the IDE's engine.
+A distinct, human-centred strand is exemplified by \citet{interactiveagent2025},
+whose three-layer agent detects smells, ranks candidate refactorings, and
+negotiates them with the developer through a natural-language interface,
+emphasising intent, project context, and trust. That work and the present one are
+complementary: it concerns \emph{how an agent should decide and communicate} which
+refactoring to propose, whereas this project concerns \emph{how the chosen
+refactoring should be executed} so that the result is correct by construction
+regardless of which party --- human or model --- selected it.
+The gap this work addresses follows directly. To the best of our knowledge, no prior
+system exposes the IDE's PSI-backed, AST-aware refactoring engine as a
+\emph{multi-operation}, \emph{externally-callable} tool API through which an arbitrary
+coding agent --- Claude Code, or any other function-calling LLM --- can \emph{execute}
+correct, project-wide refactorings, rather than merely read the AST for context before
+emitting a text patch. The prior systems surveyed here are single-operation, hardwired
+inside the IDE, or text-level; the closest contemporaneous work is JetBrains' own MCP
+server, which exposes IDE capabilities to MCP clients. The present system is
+complementary to that effort, contributing a model-agnostic, multi-operation
+refactoring tool surface of exactly this kind (\Cref{ch:design}).
+
+\section{Constrained Action Spaces and Tool Use}
+\label{sec:bg-action-space}
+
+\citet{demystifying2025} provide a systematic taxonomy of LLM software-engineering
+agents by tool repertoire, memory, action space, and coordination, and surface
+the central tension between \emph{generality} (a Turing-complete shell) and
+\emph{safety} (a constrained action space). This framing positions the present
+work: rather than exposing a general shell, the plugin offers only typed,
+semantically defined refactoring operations, trading generality for guaranteed
+structural validity. At the other end of the spectrum, the widely used Aider
+assistant~\citep{aider} edits whole files or diffs committed to git with no AST
+awareness, exemplifying the state-of-practice text layer that this project
+contrasts with the semantic (symbol) layer.
+
+\section{Refactoring Detection as an Evaluation Oracle}
+\label{sec:bg-detection}
+
+Finally, the evaluation in Chapter~\ref{ch:eval} draws on refactoring
+\emph{detection}. \citet{refactoringminer2025} present RefactoringMiner, the
+state-of-the-art tool for detecting refactoring operations in commit histories
+via refactoring-aware AST differencing; it serves as a ground-truth oracle in
+most of the benchmarks above and is used here to confirm that a tool call
+produced the intended refactoring type. \citet{motivations2025} complement this
+with an LLM-driven taxonomy of \emph{why} developers refactor, which, while not
+central to this work, suggests when an agent might appropriately propose a
+refactoring. Compilation --- the primary oracle in this work --- is a necessary
+but not sufficient check on behaviour preservation. A stronger, complementary
+signal is functional equivalence: \citet{difffuzzing2026} apply differential
+fuzzing to LLM-generated refactorings, executing the original and refactored code
+on shared inputs to surface behavioural divergence that compilation alone cannot
+detect. Such behavioural oracles are orthogonal to the structural guarantees
+studied here --- the structured engine guarantees a semantics-preserving
+\emph{transformation}, whereas differential fuzzing would \emph{independently
+verify} that preservation --- and combining the two is a natural direction for
+future evaluation (\Cref{ch:conclusion}).
+
+\section{Summary and Research Gap}
+\label{sec:bg-gap}
+
+Table~\ref{tab:gap} situates this project against the prior work surveyed above.
+Text-generation approaches offer broad operation coverage but no correctness
+guarantee and a measured ceiling near 41.6\%~\citep{swerefactor2025};
+single-operation IDE plugins such as EM-Assist~\citep{emassist2024} guarantee
+correctness but expose one operation and no external API; and agent platforms
+such as SWE-agent~\citep{sweagent2024} provide an external tool interface but
+edit as text.
+
+\begin{table}[h]
+\centering
+\caption{Where this project sits relative to prior approaches.}
+\label{tab:gap}
+\begin{tabular}{@{}llll@{}}
+\toprule
+Approach & Example & Execution & Gap addressed here \\
+\midrule
+LLM generates code text   & SWE-agent, Aider, MANTRA & text diff      & no correctness guarantee \\
+Single-op IDE plugin      & EM-Assist, Move Method   & IntelliJ PSI    & one operation; no external API \\
+Read-only AST + patch     & AutoCodeRover            & text patch      & AST not used for writes \\
+\textbf{This project}     & ---                      & IntelliJ PSI    & multi-op, externally callable \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The pattern across these rows is consistent: the systems that \emph{execute} safely
+cannot be called by an agent, and the systems an agent \emph{can} call execute as
+text. Even the approaches that exploit the abstract syntax tree use it only to
+\emph{read} --- to gather context before emitting a textual patch --- never to
+\emph{write}. This project closes that gap. It exposes the IDE's PSI engine as a
+multi-operation, externally-callable tool surface, so that a coding agent does not
+merely read the AST but \emph{performs its edits through it}: every rename, move, or
+signature change is applied by the engine and propagated across the whole codebase,
+making the result correct by construction. To the best of our knowledge, allowing an
+external agent to drive a general, multi-operation IDE refactoring engine in this way
+has not been done before; it is the foundation of the design (\Cref{ch:design}) and
+evaluation (\Cref{ch:eval}) that follow.

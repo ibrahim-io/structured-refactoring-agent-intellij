@@ -39,6 +39,9 @@ bin/
 ### VS Code ###
 .vscode/
 
+### Claude Code local session data (memory, transcripts) — do not publish ###
+.claude/
+
 ### Mac OS ###
 .DS_Store
 

@@ -578,9 +578,10 @@ def main():
     )
     parser.add_argument("--tasks",        default="benchmarks/tasks.json")
     parser.add_argument("--provider",     default="anthropic",
-                        choices=["anthropic", "openai", "groq", "gemini"],
-                        help="LLM provider (anthropic, openai, groq, gemini). "
-                             "groq and gemini use their OpenAI-compatible endpoints.")
+                        choices=["anthropic", "openai", "groq", "gemini", "ollama"],
+                        help="LLM provider (anthropic, openai, groq, gemini, ollama). "
+                             "groq/gemini use their OpenAI-compatible endpoints; "
+                             "ollama drives a local model at localhost:11434 (no rate limit, no key).")
     parser.add_argument("--api-key",      default="",
                         help="API key (defaults to ANTHROPIC_API_KEY or OPENAI_API_KEY env var)")
     parser.add_argument("--model",        default="",
@@ -602,11 +603,15 @@ def main():
                       "base_url": "https://api.groq.com/openai/v1"},
         "gemini":    {"env": "GEMINI_API_KEY",    "model": "gemini-2.0-flash",
                       "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"},
+        "ollama":    {"env": "OLLAMA_API_KEY",    "model": "qwen2.5-coder:7b",
+                      "base_url": "http://localhost:11434/v1"},
     }
     cfg = PROVIDER_CONFIG[args.provider]
     api_key = args.api_key or os.environ.get(cfg["env"], "")
     if not api_key and args.provider == "gemini":
         api_key = os.environ.get("GOOGLE_API_KEY", "")
+    if not api_key and args.provider == "ollama":
+        api_key = "ollama"  # local server ignores the key, but the OpenAI client requires a non-empty value
     model    = args.model or cfg["model"]
     base_url = cfg["base_url"]
 

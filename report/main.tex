@@ -1,0 +1,236 @@
+% =============================================================================
+%  Imperial College London — MEng (AI & Machine Learning) Final Year Project
+%  Structured Refactoring Agent for IntelliJ
+%
+%  Build:  cd report && latexmk -pdf main.tex     (or pdflatex x2 + bibtex)
+%  This is a SCAFFOLD. Prose marked [WRITE: ...] is yours to author.
+%  See WRITING_GUIDE.md for the page budget, rubric mapping, and day-by-day.
+% =============================================================================
+\documentclass[11pt,a4paper]{report}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}   % scalable fonts (required by microtype expansion)
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{microtype}
+\usepackage[numbers,square]{natbib}
+\usepackage{hyperref}
+\usepackage{cleveref}   % load AFTER hyperref
+
+\graphicspath{{figures/}}
+
+% ---- Visible placeholder for content you still need to write -----------------
+\newcommand{\writeme}[1]{\textcolor{red}{\textbf{[WRITE:} #1\textbf{]}}}
+
+% ---- Code listing style ------------------------------------------------------
+\definecolor{codegray}{gray}{0.95}
+\lstdefinestyle{code}{
+  backgroundcolor=\color{codegray},
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  captionpos=b,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny,
+  showstringspaces=false,
+  tabsize=2,
+}
+\lstset{style=code}
+
+% ---- Project metadata (FILL THESE IN) ---------------------------------------
+\newcommand{\reporttitle}{Structured Refactoring Agent for IntelliJ:\\Decoupling LLM Reasoning from AST-Safe Execution}
+\newcommand{\reportauthor}{Ibrahim Ibrahim}
+\newcommand{\supervisorname}{Dr Robert Chatley}
+\newcommand{\secondmarkername}{\writeme{second marker name}}
+\newcommand{\reportdate}{June 2026}
+
+% NOTE: PDF metadata must be plain text — no \\ and no \writeme/\textcolor here.
+\hypersetup{
+  colorlinks=true, linkcolor=black, citecolor=black, urlcolor=blue,
+  pdftitle={Structured Refactoring Agent for IntelliJ},
+  pdfauthor={Ibrahim}
+}
+
+\begin{document}
+
+% ============================== TITLE PAGE ===================================
+\begin{titlepage}
+  \centering
+  \vspace*{1cm}
+  {\scshape\LARGE Imperial College London \par}
+  \vspace{0.3cm}
+  {\scshape\large Department of Computing \par}
+  \vspace{2.5cm}
+  {\huge\bfseries \reporttitle \par}
+  \vspace{2.5cm}
+  {\Large \reportauthor \par}
+  \vspace{0.2cm}
+  {\large CID: 01870877 \par}
+  \vspace{1cm}
+  {\large Supervisor: \supervisorname \par}
+  {\large Second Marker: \secondmarkername \par}
+  \vfill
+  {\large Submitted in partial fulfilment of the requirements for the\\
+   MEng degree in Computing (Artificial Intelligence and Machine Learning)\par}
+  \vspace{1cm}
+  {\large \reportdate \par}
+\end{titlepage}
+
+% ============================== ABSTRACT =====================================
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+% ~250 words. Write this LAST, once results are final.
+% Must state: problem, what you built, what you measured, the headline result.
+Large language models can reliably identify useful refactorings but apply them
+unreliably: when an LLM rewrites source text directly it misses cross-file usages,
+breaks imports, and produces changes that compile yet are semantically wrong, with the
+strongest models reaching only about 41.6\% on repository-level refactoring benchmarks.
+This project argues that the limitation lies in the \emph{action space} rather than the
+model, and addresses it by decoupling reasoning from execution. An IntelliJ~IDEA plugin
+exposes the IDE's PSI-backed refactoring engine --- rename, move, change-signature,
+safe-delete, inline, extract, and symbol creation --- as a model-agnostic,
+externally-callable tool API, over HTTP and the Model Context Protocol, that any
+function-calling agent can drive. Because every edit is performed by the IDE engine
+rather than emitted as text, each change is behaviour-preserving and propagated across
+the whole codebase by construction.
+
+The system is evaluated with a controlled comparison that holds the model fixed and
+varies only the edit primitive, across three real-world Java projects (spring-petclinic,
+Apache Commons Lang, and jackson-databind, up to 474 source files), scored by
+compilation and disk-state checks. The result is deliberately nuanced: against scripted
+and weak-model text baselines the structured engine wins clearly (9/9 versus 6/9 on
+spring-petclinic), but a \emph{capable} agent editing raw text reaches parity on
+behaviour-preserving refactorings (12 of 12 across the three projects). The structured
+action space's durable, measured advantages are therefore correctness \emph{by
+construction} --- independent of the model's capability and of any build-feedback loop
+--- exhaustive, type-aware structural queries that text editing cannot perform at all,
+and far fewer mutating operations; advantages that prove decisive precisely where the
+driving agent is weak, scripted, or unverified.
+
+% ============================== DECLARATION ==================================
+\chapter*{Declarations}
+\addcontentsline{toc}{chapter}{Declarations}
+
+\noindent\textbf{Originality.}\\
+% This must be YOUR honest statement. Template only.
+This report and the work it describes are my own, except where explicitly stated and
+referenced.
+
+\vspace{1em}
+\noindent\textbf{Source code.}\\
+The implementation is available at:
+\url{https://github.com/ibrahim-io/structured-refactoring-agent-intellij}.
+% NOTE (rubric requirement): the repo link goes here AND your supervisor must
+% have been granted access to the repository.
+
+\vspace{1em}
+\noindent\textbf{Use of generative AI.}\\
+% CRITICAL — see WRITING_GUIDE.md. Undeclared/over-relied-upon AI => 0-39% cap
+% + possible misconduct referral. Acceptable use (coding assistance, structuring,
+% proofreading) is fine IF disclosed, human-reviewed, and you remain the author.
+% Write this honestly and specifically. Template prompts below — REPLACE them.
+This project made substantial and disclosed use of generative AI --- specifically
+Anthropic's Claude (the Claude Opus~4.8 model, used through the Claude Code agentic
+command-line tool) --- in three roles. First, as a \emph{coding assistant} for parts of
+the plugin and the evaluation harness, including the headless-execution technique and
+the benchmark runners. Second, in \emph{writing}: to produce first drafts and structure
+for this report from my own research notes, design decisions, and measured results,
+which I then reviewed, corrected, rewrote where necessary, and verified against the
+source code and the data. Third, in the \emph{evaluation itself}: Claude was used both
+to orchestrate the benchmark runs and, in the controlled comparison
+(\Cref{sec:eval-controlled}), as the ``capable agent'' under test that drives the
+refactoring tools; this dual role is stated explicitly in the methodology, and means
+that arm demonstrates the system's intended deployment rather than an independent
+third-party benchmark. I directed the work throughout, I checked the factual claims,
+figures, and citations myself, and I am the author of both the system and this report;
+all AI-generated text and code was reviewed and adapted by me rather than submitted as
+produced, and I can explain and defend every part.
+
+\vspace{1em}
+\noindent\textbf{Ethics.}\\
+This project involved neither human participants nor personal data: it is a software
+system evaluated entirely on open-source code repositories. The developer study
+originally considered as an extension was not conducted, so the project required no
+ethics approval.
+
+% ============================ ACKNOWLEDGEMENTS ================================
+\chapter*{Acknowledgements}
+\addcontentsline{toc}{chapter}{Acknowledgements}
+\writeme{Optional — supervisor, second marker, anyone who helped.}
+
+% ============================== CONTENTS =====================================
+\tableofcontents
+\listoffigures
+\listoftables
+
+% ============================== CHAPTERS =====================================
+\input{chapters/01-introduction}
+\input{chapters/02-background}
+\input{chapters/03-design}
+\input{chapters/04-implementation}
+\input{chapters/05-evaluation}
+\input{chapters/06-conclusion}
+
+% ============================== BIBLIOGRAPHY =================================
+\nocite{*}  % TEMP: forces all references.bib entries to render so the bib can be
+            % verified before any \cite exists. REMOVE once you cite real sources.
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+% ============================== APPENDICES ===================================
+\appendix
+\chapter{Tool API Reference}
+% Full 18-tool JSON schema, example requests/responses. Good place to move
+% detail out of the Implementation chapter to respect the page limit
+% (check whether appendices count toward your page limit — see WRITING_GUIDE.md).
+The tool surface is published as a single JSON schema served at
+\texttt{GET /tools/schema} (the live schema is authoritative; a grouped summary appears
+in \Cref{tab:tools}). Each tool is invoked by POSTing a \texttt{\{"tool",\,"params"\}}
+body to \texttt{/tools}. Two representative calls follow.
+
+A rename by qualified name:
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize]
+POST /tools
+{"tool": "rename_symbol",
+ "params": {"qualifiedName": "...petclinic.owner.Owner#telephone",
+            "newName": "phoneNumber"}}
+=> {"ok": true, "message": "renamed telephone to phoneNumber"}
+\end{lstlisting}
+
+A project-wide, type-aware usage query (no text-level equivalent):
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize]
+POST /tools
+{"tool": "find_usages",
+ "params": {"qualifiedName": "org.apache.commons.lang3.CharRange"}}
+=> {"count": 213, "usages": [{"filePath": "...", "line": 61, "preview": "..."}]}
+\end{lstlisting}
+The complete operation set, parameters, and return shapes are documented in the live
+schema and in the project repository.
+
+\chapter{Benchmark Task Definitions}
+Each task in the benchmark suites (\texttt{benchmarks/tasks\_petclinic.json},
+\texttt{tasks\_commons\_lang.json}, and \texttt{tasks\_jackson.json}) carries a
+natural-language description, the canonical operation(s), and a machine-checkable success
+specification. One representative entry --- the overload-safe rename of
+\Cref{sec:eval-rootcause} --- is:
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize]
+{"id": "pc-rename-method-002",
+ "description": "Rename the two-argument overload getPet(String, boolean) in Owner
+                 to findPet; do not rename the other getPet overloads.",
+ "project": "spring-petclinic",
+ "operations": [{"tool": "rename_symbol",
+                 "params": {"qualifiedName": "...owner.Owner#getPet(String,boolean)",
+                            "newName": "findPet"}}],
+ "validation": {"type": "compile_and_symbol_exists",
+                "expectedSymbol": "findPet", "crossFileCheck": true}}
+\end{lstlisting}
+The full suites are available in the project repository.
+
+\end{document}

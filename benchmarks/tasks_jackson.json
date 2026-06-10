@@ -1,0 +1,29 @@
+[
+  {
+    "id": "jk-rename-class-001",
+    "description": "Rename the class com.fasterxml.jackson.databind.util.ClassUtil to ClassUtilities. Update all references and imports across the project.",
+    "project": "jackson-databind",
+    "operations": [
+      {"tool": "rename_symbol", "params": {"qualifiedName": "com.fasterxml.jackson.databind.util.ClassUtil", "newName": "ClassUtilities"}}
+    ],
+    "validation": {"type": "compile_and_file_exists", "expectedFile": "com/fasterxml/jackson/databind/util/ClassUtilities.java"}
+  },
+  {
+    "id": "jk-rename-class-002",
+    "description": "Rename the class com.fasterxml.jackson.databind.node.ObjectNode to JsonObjectNode. Update all references and imports across the project.",
+    "project": "jackson-databind",
+    "operations": [
+      {"tool": "rename_symbol", "params": {"qualifiedName": "com.fasterxml.jackson.databind.node.ObjectNode", "newName": "JsonObjectNode"}}
+    ],
+    "validation": {"type": "compile_and_file_exists", "expectedFile": "com/fasterxml/jackson/databind/node/JsonObjectNode.java"}
+  },
+  {
+    "id": "jk-find-usages-001",
+    "description": "Find all usages of the class com.fasterxml.jackson.databind.JsonNode and report how many references exist across the project.",
+    "project": "jackson-databind",
+    "operations": [
+      {"tool": "find_usages", "params": {"qualifiedName": "com.fasterxml.jackson.databind.JsonNode"}}
+    ],
+    "validation": {"type": "find_usages_non_empty"}
+  }
+]

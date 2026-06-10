@@ -59,6 +59,37 @@ TOOL_CALL_URL   = "http://127.0.0.1:{port}/tools"
 STATUS_URL      = "http://127.0.0.1:{port}/status"
 
 
+# ── Rate-limit back-off (free-tier providers throttle aggressively) ──────────
+def _retry_seconds(msg: str):
+    """Extract a wait hint like 'try again in 367.5ms' / 'in 9m49.68s' from a 429 message."""
+    m = re.search(r"try again in\s+(?:(\d+)m)?\s*(\d+(?:\.\d+)?)\s*(ms|s)", msg)
+    if not m:
+        return None
+    mins = int(m.group(1)) if m.group(1) else 0
+    val  = float(m.group(2))
+    secs = val / 1000.0 if m.group(3) == "ms" else val
+    return mins * 60 + secs
+
+
+def _chat_with_backoff(client, max_retries: int = 6, **kwargs):
+    """chat.completions.create with retry on short (per-minute) rate limits.
+    Long/daily limits are re-raised so the suite fails fast instead of stalling for minutes."""
+    delay = 2.0
+    for attempt in range(max_retries):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except _openai_mod.RateLimitError as e:
+            wait = _retry_seconds(str(e))
+            if wait is None:
+                wait = delay
+                delay = min(delay * 2, 30)
+            if wait > 90:           # daily/long limit -> don't block the whole run
+                raise
+            print(f"    rate-limited; waiting {wait:.1f}s (retry {attempt + 1}/{max_retries})", flush=True)
+            time.sleep(wait + 0.5)
+    return client.chat.completions.create(**kwargs)  # final attempt; let it raise
+
+
 # ── Schema conversion ────────────────────────────────────────────────────────
 
 def anthropic_to_openai_tools(tools: list) -> list:
@@ -110,7 +141,8 @@ def run_task_with_agent(task: dict, port: int, api_key: str,
         "Use find_symbol_by_name to locate symbols before operating on them. "
         "Use read_file to inspect source code before adding or modifying members. "
         "Use find_usages to check impact before renaming or deleting. "
-        "Always use qualifiedName parameters instead of filePath+offset when possible."
+        "Always use qualifiedName parameters instead of filePath+offset when possible. "
+        "Only call the tools provided to you; do not invent tool names."
     )
 
     client = anthropic.Anthropic(api_key=api_key)
@@ -154,8 +186,9 @@ def run_task_with_agent(task: dict, port: int, api_key: str,
 
 def run_task_with_agent_openai(task: dict, port: int, api_key: str,
                                model: str = "gpt-4o",
-                               max_turns: int = 12) -> dict:
-    """Drive an OpenAI model with the structured IntelliJ tool API."""
+                               max_turns: int = 12,
+                               base_url: str = None) -> dict:
+    """Drive an OpenAI-compatible model (OpenAI, Groq, Gemini) with the structured IntelliJ tool API."""
     if not HAS_OPENAI:
         raise RuntimeError("openai package not installed. Run: pip install openai")
 
@@ -170,24 +203,49 @@ def run_task_with_agent_openai(task: dict, port: int, api_key: str,
         "Use find_symbol_by_name to locate symbols before operating on them. "
         "Use read_file to inspect source code before adding or modifying members. "
         "Use find_usages to check impact before renaming or deleting. "
-        "Always use qualifiedName parameters instead of filePath+offset when possible."
+        "Always use qualifiedName parameters instead of filePath+offset when possible. "
+        "Only call the tools provided to you; do not invent tool names."
     )
 
-    client = _openai_mod.OpenAI(api_key=api_key)
+    client = _openai_mod.OpenAI(api_key=api_key, base_url=base_url)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task["description"]},
     ]
     tool_calls_made = []
     turns = 0
+    valid_tool_names = [t["function"]["name"] for t in tools]
+    consecutive_tool_errors = 0
 
     while turns < max_turns:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-        )
+        try:
+            response = _chat_with_backoff(
+                client,
+                model=model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            )
+        except _openai_mod.BadRequestError as e:
+            # Some OpenAI-compatible providers (notably Groq) hard-reject a turn when the
+            # model calls a tool not in the provided list. Recover by reminding the model of
+            # the valid tools and retrying, rather than failing the whole task.
+            if "tool" not in str(e).lower():
+                raise
+            consecutive_tool_errors += 1
+            if consecutive_tool_errors > 3:
+                raise
+            turns += 1
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Your previous response called a tool that is not available. "
+                    "You may ONLY call these tools: " + ", ".join(valid_tool_names) + ". "
+                    "Do not invent tool names; use only the provided structured tools."
+                ),
+            })
+            continue
+        consecutive_tool_errors = 0
         turns += 1
 
         msg = response.choices[0].message
@@ -403,14 +461,25 @@ def validate(
             f"Tool '{fc['tool']}' failed: {fc['result'].get('error', fc['result'])}"
         )
 
+    # The `operations` list is the CANONICAL tool sequence (it is what the
+    # scripted direct-runner executes). When grading an *agent*, require only the
+    # MUTATING operations: read-only/exploratory tools (find_symbol_by_name,
+    # read_file, find_usages, ...) describe one valid path to the result, but an
+    # agent may reach the same outcome without them (e.g. calling rename_symbol
+    # directly by qualified name). Correctness is graded by the compile and
+    # disk-state layers below, so demanding a specific exploration strategy would
+    # penalise efficiency rather than incorrectness. (Disclosed in the report's
+    # evaluation methodology; the scripted runner still satisfies this because it
+    # calls the mutating tools too.)
     expected_tools = [op["tool"] for op in task.get("operations", [])]
+    required_tools = [t for t in expected_tools if t not in READ_ONLY_TOOLS]
     actual_tools   = [c["tool"] for c in agent_result["tool_calls"]]
-    missing = [t for t in expected_tools if t not in actual_tools]
+    missing = [t for t in required_tools if t not in actual_tools]
     if missing:
         passed = False
-        notes.append(f"Expected tools not called: {missing}")
+        notes.append(f"Required (mutating) tools not called: {missing}")
     else:
-        notes.append(f"All expected tools called: {expected_tools}")
+        notes.append(f"Required tools called: {required_tools}")
 
     # Non-compile validation types — handle here and return early
     if vtype == "find_usages_non_empty":
@@ -562,8 +631,11 @@ def main():
     )
     parser.add_argument("--tasks",        default="benchmarks/tasks.json")
     parser.add_argument("--agent-port",   type=int, default=6473)
-    parser.add_argument("--provider",     default="anthropic", choices=["anthropic", "openai"],
-                        help="LLM provider to use (anthropic or openai)")
+    parser.add_argument("--provider",     default="anthropic",
+                        choices=["anthropic", "openai", "groq", "gemini", "ollama"],
+                        help="LLM provider (anthropic, openai, groq, gemini, ollama). "
+                             "groq/gemini use their OpenAI-compatible endpoints; "
+                             "ollama drives a local model at localhost:11434 (no rate limit, no key).")
     parser.add_argument("--api-key",      default="",
                         help="API key (defaults to ANTHROPIC_API_KEY or OPENAI_API_KEY env var)")
     parser.add_argument("--model",        default="",
@@ -581,17 +653,28 @@ def main():
     )
     args = parser.parse_args()
 
-    # Resolve API key and default model from provider
-    if args.provider == "openai":
-        api_key = args.api_key or os.environ.get("OPENAI_API_KEY", "")
-        model   = args.model or "gpt-4o"
-    else:
-        api_key = args.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        model   = args.model or "claude-sonnet-4-6"
+    # Resolve API key, default model, and (for OpenAI-compatible providers) base URL.
+    PROVIDER_CONFIG = {
+        "anthropic": {"env": "ANTHROPIC_API_KEY", "model": "claude-sonnet-4-6",     "base_url": None},
+        "openai":    {"env": "OPENAI_API_KEY",    "model": "gpt-4o",                 "base_url": None},
+        "groq":      {"env": "GROQ_API_KEY",      "model": "openai/gpt-oss-120b",
+                      "base_url": "https://api.groq.com/openai/v1"},
+        "gemini":    {"env": "GEMINI_API_KEY",    "model": "gemini-2.0-flash",
+                      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"},
+        "ollama":    {"env": "OLLAMA_API_KEY",    "model": "qwen2.5-coder:7b",
+                      "base_url": "http://localhost:11434/v1"},
+    }
+    cfg = PROVIDER_CONFIG[args.provider]
+    api_key = args.api_key or os.environ.get(cfg["env"], "")
+    if not api_key and args.provider == "gemini":
+        api_key = os.environ.get("GOOGLE_API_KEY", "")
+    if not api_key and args.provider == "ollama":
+        api_key = "ollama"  # local server ignores the key, but the OpenAI client requires a non-empty value
+    model    = args.model or cfg["model"]
+    base_url = cfg["base_url"]
 
     if not api_key:
-        env_var = "OPENAI_API_KEY" if args.provider == "openai" else "ANTHROPIC_API_KEY"
-        print(f"ERROR: No API key. Set {env_var} or use --api-key")
+        print(f"ERROR: No API key. Set {cfg['env']} (in .env or environment) or use --api-key")
         sys.exit(1)
 
     if not check_server(args.agent_port):
@@ -633,15 +716,16 @@ def main():
 
         t0 = time.time()
         try:
-            if args.provider == "openai":
-                agent_result = run_task_with_agent_openai(
+            if args.provider == "anthropic":
+                agent_result = run_task_with_agent(
                     task, args.agent_port, api_key,
                     model=model, max_turns=args.max_turns,
                 )
             else:
-                agent_result = run_task_with_agent(
+                agent_result = run_task_with_agent_openai(
                     task, args.agent_port, api_key,
                     model=model, max_turns=args.max_turns,
+                    base_url=base_url,
                 )
 
             # Commit the post-task state so RefactoringMiner can diff the two commits

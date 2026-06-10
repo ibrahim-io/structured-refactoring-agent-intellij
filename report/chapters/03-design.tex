@@ -1,0 +1,207 @@
+% =============================================================================
+%  CHAPTER 3 — DESIGN / ARCHITECTURE
+%  RUBRIC: Execution & Technical Quality (50%). BUDGET: ~6-9 pages.
+%
+%  >>> Sections 3.1-3.5 are an AI FIRST DRAFT from your PROJECT_CONTEXT.md:
+%      edit into your voice, verify details, then I polish.
+%  >>> 3.1 principle justifications and 3.6 alternatives are left as [WRITE] —
+%      that reasoning is yours and is what the viva probes.
+% =============================================================================
+\chapter{Design}
+\label{ch:design}
+
+\section{Design Goals and Principles}
+\label{sec:design-principles}
+
+The plugin is shaped by five principles, each a direct response to a failure mode
+of text-generation refactoring identified in Chapter~\ref{ch:background}.
+
+\paragraph{Correctness by construction.} Every write is performed by IntelliJ's
+own refactoring engine rather than by emitting modified source text. The result
+is therefore correct with respect to the IDE's semantic model --- references,
+imports, comments, and string occurrences updated consistently --- independently
+of the language model's text-generation quality. This is the project's central
+design commitment, and the property that distinguishes it from text-patch agents.
+
+\paragraph{Decoupling reasoning from execution.} The language model decides
+\emph{what} to refactor; the IDE decides and performs \emph{how}. The agent never
+writes code: it selects an operation and its arguments, and the engine carries it
+out. This narrows the agent's responsibility to the task it is good at (planning)
+and removes the task it is unreliable at (producing correct edits).
+
+\paragraph{A complete, multi-operation surface.} Rather than a single hardwired
+operation, the plugin exposes the full range an agent needs to do realistic
+maintenance --- rename, move, change-signature, safe-delete, inline, extract, and
+symbol creation --- so that multi-step tasks can be completed end to end without
+falling back to text editing for the operations the tool does not cover.
+
+\paragraph{Model-agnosticism.} The interface is a language-neutral JSON tool
+schema served over HTTP, and re-exported over the Model Context Protocol, so that
+any function-calling model can drive it. The contribution is the structured
+editing interface, not a dependency on any one provider.
+
+\paragraph{Read before write.} Inspection tools let the agent examine source and
+assess the blast radius of a change before committing to it, supporting genuine
+read--plan--act loops rather than blind edits.
+
+Of these five, the first two are the load-bearing commitments. Correctness by
+construction and the decoupling of reasoning from execution are what let the approach
+hold up \emph{at scale}: because the engine --- not the model --- propagates each
+change to every dependent reference, correctness does not rest on the agent
+re-deriving the full blast radius of an edit across a large codebase, and the
+guarantee that the change is behaviour-preserving holds regardless of how capable the
+driving model is or whether it has a build-feedback loop to catch its own mistakes.
+The agent is left only with the part it is genuinely reliable at --- choosing which
+operation to apply --- which is precisely why relying on the engine's AST-aware view
+of the project is sounder than trusting the model's text edits to be complete.
+
+\section{System Architecture}
+\label{sec:design-architecture}
+
+Figure~\ref{fig:arch} shows the path a single operation takes. An external agent
+--- or the in-IDE chat panel --- issues a tool call as an HTTP \texttt{POST} to a
+server bound to \texttt{127.0.0.1}; the server dispatches the call to a
+project-scoped service method; that method resolves the target symbol and invokes
+the corresponding IntelliJ processor, which mutates the PSI and persists the
+result to disk. Because the same backend serves both the external HTTP surface
+and the internal chat panel, the two entry points share one implementation and
+one correctness guarantee.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, align=center, inner sep=5pt, minimum width=78mm},
+  eng/.style={box, fill=black!7},
+  >={Stealth[]},
+  node distance=5mm,
+]
+  \node[box] (agent) {External coding agent (Claude Code or any\\ function-calling LLM), or the in-IDE chat panel};
+  \node[box, below=of agent] (http) {\texttt{POST /tools} on \texttt{127.0.0.1}\\ (also re-exported over the Model Context Protocol)};
+  \node[box, below=of http] (server) {\texttt{AgentToolServer} $\rightarrow$ \texttt{ToolsHandler.dispatch}};
+  \node[box, below=of server] (svc) {\texttt{RefactorService}: resolve qualified name\\ to a \texttt{PsiElement}};
+  \node[eng, below=of svc] (proc) {IntelliJ refactoring engine\\ (\texttt{HeadlessRenameProcessor}, \texttt{ChangeSignatureProcessor}, \ldots)};
+  \node[eng, below=of proc] (psi) {PSI semantic model: every reference, import\\ and occurrence updated atomically};
+  \node[box, below=of psi] (files) {Source files on disk};
+  \foreach \a/\b in {agent/http,http/server,server/svc,svc/proc,proc/psi,psi/files}
+    \draw[->] (\a) -- (\b);
+  \node[right=3mm of proc, font=\footnotesize\itshape, text width=23mm, align=left] {correct by construction};
+\end{tikzpicture}
+\caption{Request path from an agent's tool call to a correct-by-construction edit.}
+\label{fig:arch}
+\end{figure}
+
+As a concrete trace, a rename begins as a call naming the target by qualified name
+and a new identifier; the service resolves the name to a \texttt{PsiElement},
+hands it to \texttt{RenameProcessor}, and the processor updates the declaration
+and every resolved reference across the project as a single atomic refactoring.
+In code, the request lands in \texttt{ToolsHandler.handle}, which parses the JSON body
+and routes it through \texttt{dispatch} to the project-scoped \texttt{RefactorService}
+(resolved via \texttt{project.service<RefactorService>()}). For the rename above,
+\texttt{RefactorService.renameByQualifiedName} resolves the name to a
+\texttt{PsiElement} and runs a \texttt{HeadlessRenameProcessor} --- a
+\texttt{RenameProcessor} subclass that suppresses the otherwise-blocking preview and
+conflict dialogs (\Cref{ch:impl}) --- whose \texttt{run()} performs the project-wide
+update inside a single write action before the change is flushed to disk. The hosting
+\texttt{AgentToolServer} registers \texttt{ToolsHandler} at \texttt{/tools} alongside
+\texttt{SchemaHandler} (\texttt{/tools/schema}) and \texttt{StatusHandler}
+(\texttt{/status}), all bound to \texttt{127.0.0.1}.
+
+\section{The Tool API Surface}
+\label{sec:design-tools}
+
+The API exposes eighteen operations, grouped by role
+(Table~\ref{tab:tools}). All are published as a single JSON schema at
+\texttt{GET /tools/schema}, which the agent loads to discover what it can do.
+
+\begin{table}[h]
+\centering
+\caption{The tool surface, grouped by role.}
+\label{tab:tools}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Group & Tools & Correctness basis \\
+\midrule
+Lookup     & find-symbol-by-name, list-symbols, find-symbol & PSI symbol resolution \\
+Refactor   & rename, safe-delete, move-class, change-signature & IntelliJ processors \\
+Create (Java)   & add-field, add-method, add-inner-class, create-file & \texttt{PsiElementFactory} \\
+Create (Kotlin) & add-property, add-function, create-file & \texttt{KtPsiFactory} \\
+Extract    & extract-method, extract-variable & headless \texttt{MethodExtractor} \\
+Inspect    & read-file, find-usages & PSI reference index \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The granularity is chosen to match the unit at which IntelliJ actually guarantees
+correctness: one tool per \emph{refactoring operation}. A single coarse
+\texttt{refactor} tool would push the hard part --- deciding \emph{which} semantic
+operation a request implies --- back onto the model, reintroducing the ambiguity the
+design exists to remove. A surface of dozens of fine-grained, PSI-node-level edits
+would, in the limit, recreate text editing one node at a time and forfeit the
+by-construction guarantee, since correctness in IntelliJ is a property of whole
+operations (\texttt{RenameProcessor}, \texttt{MoveClassesOrPackagesProcessor},
+\texttt{ChangeSignatureProcessor}), not of individual node mutations. The
+operation-level surface also matches what the benchmark tasks actually demand: each
+task corresponds to one or two named operations, so the agent completes it by issuing
+those operations directly rather than by planning a sequence of low-level edits.
+
+\section{Symbol Resolution by Qualified Name}
+\label{sec:design-symbols}
+
+Prior agents address code by file position or byte offset, which forces the model
+to guess locations and re-guess after each edit. This design instead addresses
+symbols by \emph{qualified name} --- for example \texttt{com.example.Foo\#bar} ---
+so the agent operates in the semantic domain of names rather than positions.
+Overloaded methods are disambiguated by typed signature: a call naming
+\texttt{Owner\#getPet(String,boolean)} resolves to exactly one of three
+\texttt{getPet} overloads, and the rename touches only that one and its callers.
+This is precisely what the \texttt{pc-rename-method-002} task isolates
+(\Cref{sec:eval-rootcause}): renaming only the two-argument
+\texttt{Owner\#getPet(String,boolean)} overload while the other two \texttt{getPet}
+overloads must survive. The three overloads are lexically identical, so a tool that
+matches on the \emph{name} alone cannot tell them apart --- the scripted baseline
+renames all three and is caught by the surviving-symbol check. Resolving the target by
+typed signature instead lets the engine select exactly the intended overload and
+rename it together with precisely its callers, by construction; a text-level approach
+can reach the same outcome only by reconstructing, from the surrounding code, the
+type information that the signature already carries.
+
+\section{Model-Agnostic Access via MCP}
+\label{sec:design-mcp}
+
+To make the model-agnostic claim concrete, a bridge re-exports the HTTP tool API
+as a Model Context Protocol server over stdio. It fetches \texttt{/tools/schema}
+live, so any tool added to the plugin appears automatically to connected clients,
+and any MCP-capable agent (for example Claude Desktop or the Gemini CLI) can drive
+the same structured backend with no change to the plugin. This realises the core
+architectural separation of the project: the language model is a replaceable
+planning layer, and the IntelliJ PSI engine is the execution layer.
+
+\section{Design Alternatives}
+\label{sec:design-alternatives}
+The design followed fairly directly from the gap analysis of
+Chapter~\ref{ch:background} rather than from a wide search over competing
+architectures. Several alternative designs nonetheless exist at the key decision
+points, and it is worth stating why the chosen approach is preferable to each.
+
+\paragraph{Generate a text patch, then validate it.} A natural alternative keeps the
+model generating modified source text and adds a compiler or linter pass afterwards to
+reject bad patches. This still places unsafe text generation on the write path: a
+compile check catches edits that fail to build, but not edits that compile yet are
+semantically wrong --- the over-eager overload rename of \Cref{sec:eval-rootcause}
+compiles and would pass such a gate. It also presupposes a build-feedback loop, which
+the structured engine does not need, since its edits are correct by construction.
+
+\paragraph{Keep the model inside the IDE, with no external interface.} EM-Assist and
+similar tools embed the model in the IDE and expose no callable API. That forecloses
+the central contribution --- a model-agnostic surface that \emph{any} external
+function-calling agent (Claude Code, the Gemini CLI, or a benchmark harness) can drive
+--- and ties the system to a single in-IDE assistant. Exposing the engine over HTTP and
+MCP is what makes the execution layer reusable and independently testable.
+
+\paragraph{Address code by position rather than by name.} Prior agents locate targets
+by file offset, which the model must guess and then re-guess after each edit shifts the
+offsets, and which cannot distinguish overloaded methods. Addressing symbols by
+qualified, signature-typed name (\Cref{sec:design-symbols}) keeps the agent in a stable
+semantic namespace and lets the engine resolve exactly one overload --- the property
+the \texttt{pc-rename-method-002} task exercises (\Cref{sec:eval-rootcause}).

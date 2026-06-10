@@ -1,0 +1,237 @@
+% =============================================================================
+%  CHAPTER 4 — IMPLEMENTATION
+%  RUBRIC: Execution & Technical Quality (50%). BUDGET: ~8-12 pages.
+%  DETAILED OUTLINE (facts from your README / PROJECT_CONTEXT.md / EVALUATION.md).
+%  Expand into prose IN YOUR OWN WORDS. Go DEEP on the hard parts (the two
+%  engineering challenges) — depth over breadth is what reaches the 70-84 band.
+%  Include short, well-explained code listings (lstlisting), not whole files.
+% =============================================================================
+\chapter{Implementation}
+\label{ch:impl}
+
+\section{Plugin Structure and the Tool Server}
+\label{sec:impl-server}
+% OUTLINE:
+%   - AgentToolServer.kt: starts an HTTP server on 127.0.0.1:6473 when a project opens.
+%   - Endpoints: POST /tools (ToolsHandler dispatch), GET /tools/schema (SchemaHandler,
+%     Claude-compatible tool defs), GET /status (StatusHandler).
+%   - Dispatch: ToolsHandler maps {tool, params} -> a project service method.
+%   - Threading: PSI mutations must run on the EDT inside a write action; describe
+%     the runProcessorOnEdt dispatcher used by the refactoring processors.
+%   - Key source files (one line each): RefactorService.kt, PsiCreationService.kt,
+%     KotlinCreationService.kt, ProjectContextProvider.kt, ApiKeyService.kt.
+\texttt{AgentToolServer} starts a \texttt{com.sun.net.httpserver.HttpServer} bound to
+\texttt{127.0.0.1:6473} when a project opens (via a \texttt{StartupActivity}) and
+registers three contexts: \texttt{POST /tools} (\texttt{ToolsHandler}),
+\texttt{GET /tools/schema} (\texttt{SchemaHandler}, which serves the function-calling
+tool definitions), and \texttt{GET /status} (\texttt{StatusHandler}). A request carries
+a JSON body \texttt{\{tool, params\}}; \texttt{ToolsHandler.dispatch} maps the tool name
+to a method on a project-scoped service --- \texttt{RefactorService},
+\texttt{PsiCreationService}, or \texttt{KotlinCreationService}.
+
+The one threading subtlety is that IntelliJ PSI mutations must run on the
+event-dispatch thread (EDT) inside a write action, whereas the HTTP request arrives on
+a server thread. Each mutating call is therefore marshalled through a small dispatcher,
+\texttt{runProcessorOnEdt}, which first waits for indexing to finish
+(\texttt{DumbService.waitForSmartMode}), then \texttt{invokeAndWait}s on the EDT,
+committing open documents before running the operation and committing and saving all
+documents afterwards so the change is flushed to disk before the HTTP response returns.
+Simpler, non-processor writes use a sibling dispatcher that wraps the body in a
+\texttt{WriteCommandAction}. This is what lets a stateless HTTP call drive a stateful,
+thread-confined IDE engine safely.
+
+\section{Refactoring Operations via IntelliJ PSI}
+\label{sec:impl-refactor}
+% OUTLINE:
+%   - Each operation delegates to an IntelliJ processor:
+%       rename        -> RenameProcessor
+%       move class    -> MoveClassesOrPackagesProcessor
+%       change sig    -> ChangeSignatureProcessor
+%       safe delete   -> SafeDeleteProcessor
+%       inline        -> InlineMethodProcessor
+%   - WORKED EXAMPLE (pick rename): trace renameByQualifiedName from the HTTP
+%     request, through resolveQualifiedName -> PsiElement, to RenameProcessor.run(),
+%     to the updated files. Show the ~5-line core as a listing.
+Every refactoring operation is a thin delegation to the corresponding IntelliJ
+processor: rename to \texttt{RenameProcessor}, move to
+\texttt{MoveClassesOrPackagesProcessor}, change-signature to
+\texttt{ChangeSignatureProcessor}, safe-delete to \texttt{SafeDeleteProcessor}, and
+inline to \texttt{InlineMethodProcessor}. The service contributes symbol resolution and
+headless execution; the processor contributes the correctness guarantee.
+
+A rename is representative. The HTTP layer calls
+\texttt{RefactorService.renameByQualifiedName}, whose core is short:
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize]
+fun renameByQualifiedName(qualifiedName: String, newName: String, ...): Result {
+    refreshProjectFromDisk()                  // reconcile VFS with on-disk state
+    val element = ReadAction.compute {
+        resolveQualifiedName(qualifiedName) as? PsiNamedElement
+    } ?: return Result.Err("could not resolve \"$qualifiedName\"")
+    return rename(element, newName, ...)      // runs the processor on the EDT
+}
+\end{lstlisting}
+The qualified name is resolved to a \texttt{PsiNamedElement} inside a read action;
+\texttt{rename} then constructs a \texttt{HeadlessRenameProcessor} --- a
+\texttt{RenameProcessor} subclass that runs without the interactive preview and
+conflict dialogs that would otherwise block an unattended IDE --- and calls
+\texttt{run()} inside \texttt{runProcessorOnEdt}. The processor rewrites the declaration
+and every resolved reference across the project as a single atomic refactoring before
+the files are saved.
+
+\section{Headless Extract-Method}
+\label{sec:impl-extract}
+% OUTLINE:
+%   - Prior extract-method tools (e.g. EM-Assist) are editor-bound: they need an
+%     open editor with a caret selection.
+%   - This uses IntelliJ's newImpl MethodExtractor.extractMethod(ExtractOptions),
+%     driven from a PsiFile + text range with no UI.
+%   - Note why this is non-trivial (building ExtractOptions without an editor).
+Extract-method is the one operation with no clean headless entry point. The
+user-facing refactoring is editor-bound --- tools such as EM-Assist require an open
+editor with a caret selection --- because the public API threads an \texttt{Editor}
+through option-gathering and the confirmation UI. This plugin instead drives IntelliJ's
+\texttt{newImpl} extraction pipeline directly from a file and a text range, with no
+editor: \texttt{ExtractSelector().suggestElementsToExtract(psiFile, range)} identifies
+the PSI elements covered by the selection, \texttt{ExtractMethodPipeline.findAllOptionsToExtract}
+computes the candidate \texttt{ExtractOptions}, and the first option --- with its
+\texttt{methodName} replaced by the requested name --- is handed to
+\texttt{MethodExtractor().extractMethod(options)} on the EDT. The non-trivial part is
+assembling a valid \texttt{ExtractOptions} (the extracted parameters, return type, and
+target) without the editor that normally supplies that information; the \texttt{newImpl}
+structures expose exactly the entry points needed to do so, where the legacy
+extract-method handler does not.
+
+\section{Symbol Creation (Java and Kotlin)}
+\label{sec:impl-create}
+% OUTLINE:
+%   - Java creation via PsiElementFactory (+ auto-format): add_field/method/inner_class/file.
+%   - Kotlin creation via KtPsiFactory: add_kt_property/function, create_kotlin_file.
+%   - One schema, two languages, no duplication in the HTTP surface; Kotlin tools
+%     load only when the Kotlin plugin is present.
+Creation tools add new code rather than transform existing code, and are built on the
+PSI element factories. The Java tools (\texttt{add\_field}, \texttt{add\_method},
+\texttt{add\_inner\_class}, \texttt{create\_java\_file}) build elements with
+\texttt{PsiElementFactory} and reformat them into the target class or file; the Kotlin
+tools (\texttt{add\_kt\_property}, \texttt{add\_kt\_function},
+\texttt{create\_kotlin\_file}) do the same through \texttt{KtPsiFactory}. Both languages
+are exposed through one JSON tool schema, so an agent works against a single uniform
+surface regardless of language. The Kotlin tools are resolved lazily and advertised only
+when the Kotlin plugin is present, so the system degrades gracefully to a Java-only
+surface when it is not, rather than failing.
+
+\section{Project Context Injection}
+\label{sec:impl-context}
+% OUTLINE:
+%   - ProjectContextProvider builds a system prompt each chat turn containing:
+%     project name + source roots, open file(s) with full symbol listings
+%     (names, kinds, signatures, offsets), tool-usage + qualified-name guidance.
+%   - Effect: the agent is productive on a project it has never seen, with no
+%     manual paste of file paths or offsets.
+For an agent to act on a project it has never seen, it must discover what is there
+without the user pasting file paths or offsets. \texttt{ProjectContextProvider} assembles
+this automatically: on each turn it builds a context block containing the project name
+and source roots, a symbol listing for the relevant file(s) --- names, kinds,
+signatures, and offsets --- and short guidance on the tool surface and on addressing
+symbols by qualified name. Because the agent receives the resolved symbol inventory up
+front, it can issue a correct \texttt{rename\_symbol} or \texttt{find\_usages} call by
+name on its first turn instead of spending turns reading files to locate a target,
+which is what makes it productive on an unfamiliar codebase out of the box.
+
+\section{Engineering Challenges}
+\label{sec:impl-challenges}
+% These two subsections are your strongest depth signal — write them fully.
+
+\subsection{VFS Staleness After External File Changes}
+\label{sec:impl-vfs}
+% OUTLINE (from EVALUATION.md "Plugin robustness fix"):
+%   - Symptom: initial structured runs scored 6/8 due to cross-task contamination.
+%   - Root cause: git resets between tasks updated the DISK, but IntelliJ's
+%     in-memory Documents retained the previous task's state; saveAllDocuments()
+%     then silently failed (IntelliJ detected an external-change conflict and
+%     refused to overwrite).
+%   - Fix: every mutating entry point (renameByQualifiedName, safeDeleteByQualifiedName,
+%     moveClass, changeSignature, inlineMethod, extractMethod, extractVariable) and
+%     every PSI-creation entry point (addField, addMethod, addInnerClass) now calls a
+%     synchronous refresh(false, true) on the source roots before reading PSI.
+%   - Why it matters: robustness to external changes (git, external editors, CI) is a
+%     property a production plugin needs anyway.
+% --- AI FIRST DRAFT from your EVALUATION.md notes. Edit freely; then I polish. ---
+The benchmark harness exposed a subtle but consequential interaction between
+IntelliJ's in-memory model of a file and that file's state on disk. To keep each
+benchmark task independent, the runner commits the project's baseline state
+before a task and performs a \texttt{git reset} back to that commit afterwards,
+so the next task begins from an identical starting point. Early structured runs
+nevertheless scored only 6 of 8 tasks, and the failures were not reproducible in
+isolation: a task that failed inside a full run passed when executed on its own.
+
+The cause was a divergence between two representations of the same file. A
+\texttt{git reset} rewrites the file on disk, but IntelliJ continues to hold an
+in-memory \texttt{Document} reflecting the \emph{previous} task's edits. When the
+plugin then applied a refactoring and called \texttt{saveAllDocuments()},
+IntelliJ detected that the on-disk file had changed beneath its stale
+\texttt{Document}, treated this as an external-modification conflict, and
+silently declined to overwrite the file. The refactoring had executed correctly
+against the PSI, but its result was never persisted --- so the validation step,
+which compiles the project from disk, saw stale contents and reported a failure.
+
+The fix makes every entry point defensive against external changes. Each mutating
+operation (\texttt{renameByQualifiedName}, \texttt{safeDeleteByQualifiedName},
+\texttt{moveClass}, \texttt{changeSignature}, \texttt{inlineMethod},
+\texttt{extractMethod}, \texttt{extractVariable}) and each creation operation
+(\texttt{addField}, \texttt{addMethod}, \texttt{addInnerClass}) now performs a
+synchronous \texttt{refresh(false, true)} of the project's source roots before it
+reads the PSI, forcing IntelliJ's virtual file system to reconcile with disk so
+that all subsequent work proceeds from the current contents. With this change the
+cross-task contamination disappeared and the suite scored 8 of 8.
+
+Although the bug surfaced through the benchmark's reset-between-tasks pattern, the
+underlying requirement is general: a plugin that exposes refactoring operations to
+an external agent must tolerate the file system changing beneath it --- through
+Git operations, an external editor, or a CI step --- rather than assuming it is
+the sole writer. Refreshing before each operation is therefore not a
+benchmark-specific workaround but a correctness property a production plugin needs
+regardless.
+
+\subsection{Class Rename Must Trigger File Rename}
+\label{sec:impl-filerename}
+% OUTLINE (from EVALUATION.md "Class rename now guarantees file rename"):
+%   - Symptom: renaming a public class updated references in memory but did NOT
+%     rename Foo.java -> Bar.java.
+%   - Root cause: the initial implementation used manual PSI text replacement
+%     (handleElementRename + setName), which skips IntelliJ's file-rename side effect.
+%   - Fix: route through RenameProcessor(project, element, newName,
+%     searchInComments, searchTextOccurrences).run() (the same runProcessorOnEdt
+%     dispatcher used by the other processors), making the file rename part of the
+%     same atomic refactoring.
+%   - Tie to benchmark task pc-rename-002 (CrashController -> PanicController),
+%     validated by compile_and_file_exists (PanicController.java exists).
+% --- AI FIRST DRAFT from your EVALUATION.md notes. Edit freely; then I polish. ---
+A second defect concerned the gap between renaming a \emph{symbol} and renaming
+the \emph{file} that declares it. The initial implementation of class rename
+manipulated the PSI directly, calling \texttt{handleElementRename}/\texttt{setName}
+to change the class identifier and update its references in memory. For most
+symbols this is sufficient; but a public Java class must reside in a file of the
+same name, so renaming the class must also rename \texttt{Foo.java} to
+\texttt{Bar.java}. The manual PSI path updated the declaration and its usages but
+silently skipped this file-rename side effect, leaving a \texttt{PanicController}
+class inside a file still called \texttt{CrashController.java} --- which does not
+compile.
+
+The fix routes class rename through IntelliJ's \texttt{RenameProcessor}
+(\texttt{RenameProcessor(project, element, newName, searchInComments,
+searchTextOccurrences).run()}), invoked through the same
+\texttt{runProcessorOnEdt} dispatcher already used for moves and signature
+changes. Because \texttt{RenameProcessor} models the rename at the level the IDE
+itself uses, the file rename happens as part of the same atomic refactoring
+rather than as a separate step the plugin must remember to perform.
+
+This case is captured directly by benchmark task \texttt{pc-rename-002} (renaming
+\texttt{CrashController} to \texttt{PanicController}), whose validation was
+deliberately changed from a RefactoringMiner check to
+\texttt{compile\_and\_file\_exists}: it asserts that \texttt{PanicController.java}
+exists at the expected path after the operation, a direct and observable signal
+that the file rename actually occurred. It also illustrates the project's central
+thesis in miniature: delegating to the IDE's own refactoring engine yields a
+correct, whole-operation result --- declaration, references, and file together
+--- whereas the manual approach reproduced exactly the kind of partial,
+inconsistent edit that a text-level tool would produce.
