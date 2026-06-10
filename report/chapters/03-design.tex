@@ -110,7 +110,7 @@ update inside a single write action before the change is flushed to disk. The ho
 \section{The Tool API Surface}
 \label{sec:design-tools}
 
-The API exposes eighteen operations, grouped by role
+The API exposes twenty-four operations, grouped by role
 (Table~\ref{tab:tools}). All are published as a single JSON schema at
 \texttt{GET /tools/schema}, which the agent loads to discover what it can do.
 
@@ -124,6 +124,8 @@ Group & Tools & Correctness basis \\
 \midrule
 Lookup     & find-symbol-by-name, list-symbols, find-symbol & PSI symbol resolution \\
 Refactor   & rename, safe-delete, move-class, change-signature & IntelliJ processors \\
+Hierarchy / Inline & pull-up-member, push-down-member, make-static, & IntelliJ processors \\
+           & migrate-type, inline-field, inline-method & \\
 Create (Java)   & add-field, add-method, add-inner-class, create-file & \texttt{PsiElementFactory} \\
 Create (Kotlin) & add-property, add-function, create-file & \texttt{KtPsiFactory} \\
 Extract    & extract-method, extract-variable & headless \texttt{MethodExtractor} \\
@@ -131,6 +133,12 @@ Inspect    & read-file, find-usages & PSI reference index \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+The Hierarchy/Inline group (pull-up and push-down member, make-method-static,
+type-migration, and field/method inlining) is implemented and exposed through the same
+schema but is not exercised by the benchmark suites of \Cref{ch:eval}, which concentrate
+on the rename, move, change-signature, safe-delete, and usage-discovery core; benchmarking
+these higher-level operations is noted as future work (\Cref{sec:concl-future}).
 
 The granularity is chosen to match the unit at which IntelliJ actually guarantees
 correctness: one tool per \emph{refactoring operation}. A single coarse

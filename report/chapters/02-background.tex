@@ -64,11 +64,10 @@ reinforcement-learning, and code-model techniques and identify trust and
 explainability as the principal barriers to adoption in production --- barriers
 that a structurally-safe, behaviour-preserving execution layer is well placed to
 lower.
-\citet{cordeiro2024refactoring} study StarCoder2, GPT-4o, GPT-4o-mini, LLaMA~3
-and DeepSeek-v3 across thirty open-source Java projects, and find that LLMs
-outperform developers on systematic, repetitive refactorings but fall short on
-context-heavy, architectural ones --- precisely the cases that depend on
-project-wide reference information. \citet{potentialllm2024} examine 180
+\citet{cordeiro2024refactoring} study StarCoder2 across thirty open-source Java
+projects, and find that the model outperforms developers on systematic, repetitive
+refactorings but falls short on context-heavy, architectural ones --- precisely the
+cases that depend on project-wide reference information. \citet{potentialllm2024} examine 180
 real-world refactorings across twenty projects and report that ChatGPT
 identifies only 28 of them unaided, yet reaches an 86.7\% success rate once the
 refactoring sub-category is pre-specified. This last result is important for the
@@ -155,9 +154,10 @@ no external interface an agent could call.
 retrieval over prior refactorings to recommend Move Method, reaching 73\%
 Recall@1 --- again a single operation, exposed through no agent-callable API.
 \citet{mantra2025} orchestrate multiple LLM agents with contextual RAG and
-self-repair for extract-method, with 82.8\% of outputs compiling and passing
-tests; the pipeline is sophisticated but still produces text-level
-replacements rather than driving the IDE's engine.
+self-repair across six method-level refactoring types (including extract-method),
+with 82.8\% of generated refactorings compiling and passing tests overall; the
+pipeline is sophisticated but still produces text-level replacements rather than
+driving the IDE's engine.
 A distinct, human-centred strand is exemplified by \citet{interactiveagent2025},
 whose three-layer agent detects smells, ranks candidate refactorings, and
 negotiates them with the developer through a natural-language interface,
@@ -180,11 +180,13 @@ refactoring tool surface of exactly this kind (\Cref{ch:design}).
 \section{Constrained Action Spaces and Tool Use}
 \label{sec:bg-action-space}
 
-\citet{demystifying2025} provide a systematic taxonomy of LLM software-engineering
-agents by tool repertoire, memory, action space, and coordination, and surface
-the central tension between \emph{generality} (a Turing-complete shell) and
-\emph{safety} (a constrained action space). This framing positions the present
-work: rather than exposing a general shell, the plugin offers only typed,
+\citet{demystifying2025} question whether elaborate autonomous agents are needed at
+all: their \emph{Agentless} approach shows that a deliberately simple, constrained
+pipeline --- localise, repair, validate --- outperforms more complex agent designs,
+and they observe that over-rich tool and action spaces lead models into imprecise or
+incorrect tool use. This evidences the central tension between \emph{generality} (a
+Turing-complete shell) and \emph{safety} (a constrained action space), and positions
+the present work: rather than exposing a general shell, the plugin offers only typed,
 semantically defined refactoring operations, trading generality for guaranteed
 structural validity. At the other end of the spectrum, the widely used Aider
 assistant~\citep{aider} edits whole files or diffs committed to git with no AST

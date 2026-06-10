@@ -37,8 +37,11 @@ experiment. \Cref{sec:eval-setup,sec:eval-validation} describe the benchmark
 projects, agents, and the multi-layer validation pipeline that produces the
 objective correctness signal. \Cref{sec:eval-sample,sec:eval-petclinic} report
 measured results on a small purpose-built project and on the real-world
-\texttt{spring-petclinic} application respectively, and \Cref{sec:eval-rootcause}
-analyses \emph{why} the text-editing baseline fails the cases it fails.
+\texttt{spring-petclinic} application, \Cref{sec:eval-rootcause} analyses
+\emph{why} the text-editing baseline fails the cases it fails, and
+\Cref{sec:eval-commons} replicates the comparison on a larger independent project
+(Apache Commons Lang). \Cref{sec:eval-controlled} then holds the driving model
+fixed and varies only the edit primitive across all three real-world projects.
 \Cref{sec:eval-threats} states the threats to validity, and \Cref{sec:eval-discussion}
 interprets what the results do and do not establish.
 
@@ -51,21 +54,29 @@ concerning developer-perceived effort, is a controlled human study deferred to
 future work (\Cref{ch:conclusion}).
 
 \begin{description}
-  \item[RQ1 (Correctness).] Does refactoring through the structured IDE engine
-    produce semantically correct, compile-safe transformations, and where does a
-    text-substitution agent operating on the same tasks fail? \emph{Answered by
-    the compile-and-content validation across both benchmark projects
-    (\Cref{sec:eval-sample,sec:eval-petclinic}) and the root-cause analysis
-    (\Cref{sec:eval-rootcause}).}
-  \item[RQ2 (Autonomy).] Can a function-calling LLM, given only the tool API and
-    injected project context, complete multi-step refactoring tasks on an
-    unfamiliar codebase without manual intervention? \emph{Answered by the
-    end-to-end agent runs in which the model is told only the task description and
-    must locate symbols and select operations itself.}
-  \item[RQ3 (Efficiency).] At equal correctness, does the structured action space
-    reduce the interaction cost --- API round-trips and tool invocations --- of
-    completing a task relative to raw file editing? \emph{Answered by the turn and
-    tool-call measurements in \Cref{sec:eval-sample}.}
+  \item[RQ1 (Correctness).] Does constraining the agent's action space to the
+    IDE's structured, AST-aware refactoring operations --- rather than free-form
+    text edits --- improve the correctness of behaviour-preserving, project-wide
+    refactorings on real-world codebases, and where does a text-substitution agent
+    on the same tasks fail? \emph{Answered by the compile-and-content validation
+    across all benchmark projects
+    (\Cref{sec:eval-sample,sec:eval-petclinic,sec:eval-commons,sec:eval-controlled})
+    and the root-cause analysis (\Cref{sec:eval-rootcause}). The agent arms are
+    driven blind --- given only the task description --- so these runs also show
+    that a function-calling LLM can locate symbols and select operations
+    autonomously.}
+  \item[RQ2 (Necessity).] For which classes of refactoring is a structured action
+    space not merely beneficial but \emph{necessary} --- i.e.\ where does
+    text-level editing fail for reasons intrinsic to its action representation
+    rather than to model capability? \emph{Answered by the root-cause analysis
+    (\Cref{sec:eval-rootcause}) and the controlled comparison
+    (\Cref{sec:eval-controlled}), which isolates the failures that persist when the
+    driving model is held fixed.}
+  \item[RQ3 (Cost).] What does routing every edit through the IDE engine cost ---
+    in the minimality of the resulting diffs and the agent's interaction cost (tool
+    calls and turns) --- relative to a text-editing agent? \emph{Answered by the
+    efficiency measurements (\Cref{sec:eval-sample}) and the diff-minimality
+    analysis (\Cref{sec:eval-diff}).}
 \end{description}
 
 \section{Experimental Setup}
@@ -331,8 +342,9 @@ any LLM is involved.
   the \texttt{llama-4-scout} agent (\texttt{results/text-edit-petclinic-llama4scout.json});
   structured executes the plugin's IntelliJ PSI refactoring operations directly, with no
   LLM (\texttt{results/structured-petclinic-direct-FINAL.json}). The structured column is
-  the tool-layer ceiling; an LLM-driven structured agent is left to future work
-  (\Cref{ch:conclusion}).}
+  the tool-layer ceiling (direct execution, no LLM); the LLM-driven structured agent ---
+  Claude Opus~4.8 selecting and invoking the same operations --- is reported in the
+  controlled comparison (\Cref{sec:eval-controlled}).}
   \label{tab:petclinic}
   \begin{tabular}{@{}llccc@{}}
     \toprule
