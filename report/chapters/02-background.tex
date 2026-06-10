@@ -58,12 +58,12 @@ tool interface.
 \section{LLM-Driven Code Refactoring}
 \label{sec:bg-llm-refactoring}
 
-A growing body of work evaluates how well LLMs can refactor code;
-\citet{aicodeopt2025} survey this landscape across machine-learning,
-reinforcement-learning, and code-model techniques and identify trust and
-explainability as the principal barriers to adoption in production --- barriers
-that a structurally-safe, behaviour-preserving execution layer is well placed to
-lower.
+A growing body of work evaluates how well LLMs can be applied to software
+engineering and code tasks; \citet{hou2024llm4se} provide a systematic literature
+review of 395 such studies and identify interpretability and trustworthiness,
+together with limited evaluation on industrial data, as open challenges that still
+impede real-world adoption --- challenges that a structurally-safe,
+behaviour-preserving execution layer is well placed to lower.
 \citet{cordeiro2024refactoring} study StarCoder2 across thirty open-source Java
 projects, and find that the model outperforms developers on systematic, repetitive
 refactorings but falls short on context-heavy, architectural ones --- precisely the
@@ -158,14 +158,17 @@ self-repair across six method-level refactoring types (including extract-method)
 with 82.8\% of generated refactorings compiling and passing tests overall; the
 pipeline is sophisticated but still produces text-level replacements rather than
 driving the IDE's engine.
-A distinct, human-centred strand is exemplified by \citet{interactiveagent2025},
-whose three-layer agent detects smells, ranks candidate refactorings, and
-negotiates them with the developer through a natural-language interface,
-emphasising intent, project context, and trust. That work and the present one are
-complementary: it concerns \emph{how an agent should decide and communicate} which
-refactoring to propose, whereas this project concerns \emph{how the chosen
-refactoring should be executed} so that the result is correct by construction
-regardless of which party --- human or model --- selected it.
+A distinct, human-centred strand examines how developers and an LLM actually
+\emph{converse} to decide and communicate which refactoring to apply.
+\citet{refactoringconversations2024} text-mine 17{,}913 developer--ChatGPT prompts
+and responses about refactoring, finding that developers typically issue generic,
+natural-language requests while the model supplies the specific refactoring
+intention, and that requests range from simply pasting code (2.3\%) to detailed
+descriptions with explicit fix instructions (41.9\%). That work and the present one
+are complementary: it concerns \emph{how} the human and the model jointly decide and
+communicate which refactoring to propose, whereas this project concerns \emph{how
+the chosen refactoring should be executed} so that the result is correct by
+construction regardless of which party --- human or model --- selected it.
 The gap this work addresses follows directly. To the best of our knowledge, no prior
 system exposes the IDE's PSI-backed, AST-aware refactoring engine as a
 \emph{multi-operation}, \emph{externally-callable} tool API through which an arbitrary
